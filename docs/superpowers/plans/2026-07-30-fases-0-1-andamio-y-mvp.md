@@ -144,6 +144,7 @@ dist/
 .vitest/
 playwright-report/
 test-results/
+.worktrees/
 ```
 
 - [ ] **Step 2: Crear `.dockerignore`**
