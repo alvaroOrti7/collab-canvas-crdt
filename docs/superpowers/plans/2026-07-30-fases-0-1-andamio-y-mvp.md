@@ -460,6 +460,29 @@ test('un ydoc escrito se recupera byte a byte', async () => {
 
   await db.execute(sql`DELETE FROM boards WHERE id = 't1'`)
 })
+
+test('el customType convierte en ambos sentidos a través del query builder', async () => {
+  const bytes = new Uint8Array([0, 127, 128, 255, 42])
+  await db.insert(boards).values({ id: 't2', title: 'roundtrip' })
+  await db.insert(boardDocs).values({ boardId: 't2', ydoc: bytes })
+
+  const [row] = await db.select().from(boardDocs).where(eq(boardDocs.boardId, 't2'))
+
+  // El test de arriba usa SQL crudo y solo prueba que Postgres mueve un Buffer a una
+  // columna bytea. Este pasa por el query builder, que es el único camino que ejercita
+  // toDriver/fromDriver del customType — la conversión que consumen `api` y `sync`.
+  expect(row!.ydoc).toBeInstanceOf(Uint8Array)
+  expect(row!.ydoc).toEqual(bytes)
+
+  await db.execute(sql`DELETE FROM boards WHERE id = 't2'`)
+})
+```
+
+El segundo test necesita imports adicionales en la cabecera del fichero:
+
+```typescript
+import { eq, sql } from 'drizzle-orm'
+import { boardDocs, boards, createDb, type Db } from '../src/index.js'
 ```
 
 - [ ] **Step 4: Crear `packages/schema/vitest.config.ts`**
@@ -611,7 +634,7 @@ git commit -m "feat(schema): tablas de boards, miembros y snapshots con Drizzle"
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/index.ts",
+    "dev": "tsx watch src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -622,14 +645,26 @@ git commit -m "feat(schema): tablas de boards, miembros y snapshots con Drizzle"
     "redis": "6.1.0"
   },
   "devDependencies": {
+    "tsx": "4.23.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   }
 }
 ```
 
-`node --watch src/index.ts` funciona sin transpilar porque Node 24 ejecuta TypeScript
-directamente (type stripping). No hace falta `tsx` ni `ts-node`.
+**Por qué `tsx` y no `node --watch` con type stripping**, que fue el primer intento y no
+funciona en este monorepo (verificado empíricamente con Node 24.18.1):
+
+1. Node **no** resuelve un import `./foo.js` hacia `foo.ts` — devuelve `ERR_MODULE_NOT_FOUND`.
+   Todo el código del repo usa la extensión `.js` en los imports, que es la convención de
+   `module: nodenext` y solo se resuelve al compilar.
+2. Node **se niega** a hacer type stripping dentro de `node_modules`
+   (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), y los paquetes de un workspace pnpm son
+   symlinks ahí. Con `"main": "./src/index.ts"`, `@canvas/schema` sería inconsumible.
+
+`tsx` resuelve los dos casos. Ojo al modo de fallo: los **tests siguen pasando** sin `tsx`
+porque Vitest usa el resolver de Vite, que sí hace ambas cosas — el fallo aparece solo al
+arrancar el servicio, como healthcheck en rojo.
 
 - [ ] **Step 2: Crear `apps/api/tsconfig.json`**
 
@@ -841,7 +876,7 @@ git commit -m "feat(api): app Hono con health que verifica Postgres y Redis"
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/index.ts",
+    "dev": "tsx watch src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -854,6 +889,7 @@ git commit -m "feat(api): app Hono con health que verifica Postgres y Redis"
   },
   "devDependencies": {
     "@hocuspocus/provider": "4.4.0",
+    "tsx": "4.23.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10",
     "ws": "8.20.0"
