@@ -619,7 +619,7 @@ git commit -m "feat(schema): tablas de boards, miembros y snapshots con Drizzle"
     "@canvas/schema": "workspace:*",
     "@hono/node-server": "2.0.12",
     "hono": "4.12.32",
-    "redis": "5.9.2"
+    "redis": "6.1.0"
   },
   "devDependencies": {
     "typescript": "7.0.2",
@@ -1162,7 +1162,7 @@ git commit -m "feat(sync): servidor Hocuspocus con persistencia en Postgres y ti
   },
   "devDependencies": {
     "@types/react": "19.2.7",
-    "@types/react-dom": "19.2.5",
+    "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "5.1.0",
     "typescript": "7.0.2",
     "vite": "8.2.0",
