@@ -1544,11 +1544,11 @@ git commit -m "feat(canvas-core): tipos de forma e índices fraccionarios con de
 ### Task 7: `canvas-core` — documento y operaciones con convergencia
 
 **Files:**
-- Create: `packages/canvas-core/src/doc.ts`, `packages/canvas-core/src/operations.ts`, `packages/canvas-core/src/index.ts`
+- Create: `packages/canvas-core/src/doc.ts`, `packages/canvas-core/src/operations.ts`, `packages/canvas-core/src/selectors.ts`, `packages/canvas-core/src/index.ts`
 - Create: `packages/canvas-core/test/convergence.test.ts`
 
 **Interfaces:**
-- Consumes: `ShapeId`, `ShapeType`, `ShapeProps`, `keyAfter`, `keyBetween` (Task 6).
+- Consumes: `ShapeId`, `ShapeType`, `ShapeProps`, `Shape`, `compareZ`, `keyAfter`, `keyBetween` (Task 6).
 - Produces:
   - `SHAPES_KEY = 'shapes'`
   - `shapesMap(doc: Y.Doc): Y.Map<Y.Map<unknown>>`
@@ -1557,6 +1557,12 @@ git commit -m "feat(canvas-core): tipos de forma e índices fraccionarios con de
   - `type ShapePatch = Partial<Pick<ShapeProps, 'x' | 'y' | 'w' | 'h' | 'rotation' | 'fill' | 'stroke' | 'zIndex'>>`
   - `updateShape(doc: Y.Doc, id: ShapeId, patch: ShapePatch): void`
   - `deleteShapes(doc: Y.Doc, ids: readonly ShapeId[]): void`
+  - `readShapes(doc: Y.Doc): Shape[]` — **ya ordenadas** por `compareZ`
+  - `readShape(doc: Y.Doc, id: ShapeId): Shape | null`
+
+`selectors.ts` vive en esta tarea, no en la siguiente: los tests de convergencia de aquí
+leen el documento con `readShapes` y `readShape`, así que sin ellos la tarea no podría
+cerrar en verde.
 
 - [ ] **Step 1: Escribir el test que falla**
 
@@ -1753,7 +1759,58 @@ export function deleteShapes(doc: Y.Doc, ids: readonly ShapeId[]): void {
 }
 ```
 
-- [ ] **Step 5: Escribir `packages/canvas-core/src/index.ts`**
+- [ ] **Step 5: Escribir `packages/canvas-core/src/selectors.ts`**
+
+```typescript
+import type * as Y from 'yjs'
+import { shapesMap } from './doc.js'
+import type { Shape, ShapeId, ShapeType } from './types.js'
+import { compareZ } from './z-index.js'
+
+function toShape(id: ShapeId, entry: Y.Map<unknown>): Shape | null {
+  const type = entry.get('type') as ShapeType | undefined
+  const zIndex = entry.get('zIndex')
+  // Una entrada sin type o sin zIndex es un documento a medio escribir por una versión
+  // anterior del cliente; se ignora en lugar de romper el render entero.
+  if (!type || typeof zIndex !== 'string') return null
+
+  const content = entry.get('content') as { toString(): string } | undefined
+
+  return {
+    id,
+    type,
+    zIndex,
+    x: Number(entry.get('x') ?? 0),
+    y: Number(entry.get('y') ?? 0),
+    w: Number(entry.get('w') ?? 0),
+    h: Number(entry.get('h') ?? 0),
+    rotation: Number(entry.get('rotation') ?? 0),
+    fill: String(entry.get('fill') ?? '#d8dee9'),
+    stroke: String(entry.get('stroke') ?? '#2e3440'),
+    text: content ? content.toString() : '',
+  }
+}
+
+/** Devuelve las formas ya ordenadas para pintar. El consumidor no debe reordenar. */
+export function readShapes(doc: Y.Doc): Shape[] {
+  const shapes: Shape[] = []
+  for (const [id, entry] of shapesMap(doc).entries()) {
+    const shape = toShape(id, entry)
+    if (shape) shapes.push(shape)
+  }
+  return shapes.sort(compareZ)
+}
+
+export function readShape(doc: Y.Doc, id: ShapeId): Shape | null {
+  const entry = shapesMap(doc).get(id)
+  return entry ? toShape(id, entry) : null
+}
+```
+
+- [ ] **Step 6: Escribir `packages/canvas-core/src/index.ts`**
+
+Exporta solo lo que ya existe. `presence.js` se añade a este fichero en la Task 8, cuando
+el módulo exista: un index que apunte a un fichero ausente rompe el typecheck del paquete.
 
 ```typescript
 export * from './types.js'
@@ -1761,37 +1818,34 @@ export * from './z-index.js'
 export * from './doc.js'
 export * from './operations.js'
 export * from './selectors.js'
-export * from './presence.js'
 ```
 
-> El index exporta `selectors` y `presence`, que se crean en la Task 8. Hasta entonces el
-> typecheck del paquete falla: es esperado. Los tests de esta tarea importan de
-> `../src/operations.js` y `../src/selectors.js` directamente, no del index, así que pasan
-> en cuanto exista `selectors.ts`. **Implementa la Task 8 antes de ejecutar `pnpm typecheck`.**
+- [ ] **Step 7: Ejecutar los tests y verlos pasar**
 
-- [ ] **Step 6: Commit**
+Run: `docker compose run --rm api pnpm --filter @canvas/canvas-core test`
+Expected: PASS, 11 tests (6 de z-index de la Task 6, 5 de convergencia de esta).
+Run: `docker compose run --rm api pnpm --filter @canvas/canvas-core typecheck`
+Expected: sin errores.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add packages/canvas-core
-git commit -m "feat(canvas-core): documento Yjs y operaciones de forma"
+git commit -m "feat(canvas-core): documento Yjs, operaciones y lectura ordenada"
 ```
-
-> El test de esta tarea aún no pasa porque necesita `selectors.ts`. Se cierra al final de
-> la Task 8, que es el siguiente paso inmediato — no dejes la Task 7 sin la 8.
 
 ---
 
-### Task 8: `canvas-core` — lectura ordenada y presencia
+### Task 8: `canvas-core` — presencia y GC de cursores
 
 **Files:**
-- Create: `packages/canvas-core/src/selectors.ts`, `packages/canvas-core/src/presence.ts`
+- Create: `packages/canvas-core/src/presence.ts`
 - Create: `packages/canvas-core/test/presence.test.ts`
+- Modify: `packages/canvas-core/src/index.ts` (añadir el export de `presence`)
 
 **Interfaces:**
-- Consumes: `shapesMap` (Task 7), `compareZ`, `Shape`, `ShapeId` (Task 6).
+- Consumes: `ShapeId` (Task 6). No toca el documento: es lógica de presencia pura.
 - Produces:
-  - `readShapes(doc: Y.Doc): Shape[]` — **ya ordenadas** por `compareZ`
-  - `readShape(doc: Y.Doc, id: ShapeId): Shape | null`
   - `CURSOR_TTL_MS = 30_000`
   - `interface Presence { name: string; color: string; cursor: { x: number; y: number } | null; selection: ShapeId[]; dragging: Record<ShapeId, { x: number; y: number }> | null }`
   - `staleClientIds(lastSeen: ReadonlyMap<number, number>, now: number, ttlMs?: number): number[]`
@@ -1849,55 +1903,7 @@ test('un mapa vacío no purga nada', () => {
 Run: `docker compose run --rm api pnpm --filter @canvas/canvas-core test presence`
 Expected: FAIL, no resuelve `../src/presence.js`.
 
-- [ ] **Step 3: Escribir `packages/canvas-core/src/selectors.ts`**
-
-```typescript
-import type * as Y from 'yjs'
-import { shapesMap } from './doc.js'
-import type { Shape, ShapeId, ShapeType } from './types.js'
-import { compareZ } from './z-index.js'
-
-function toShape(id: ShapeId, entry: Y.Map<unknown>): Shape | null {
-  const type = entry.get('type') as ShapeType | undefined
-  const zIndex = entry.get('zIndex')
-  // Una entrada sin type o sin zIndex es un documento a medio escribir por una versión
-  // anterior del cliente; se ignora en lugar de romper el render entero.
-  if (!type || typeof zIndex !== 'string') return null
-
-  const content = entry.get('content') as { toString(): string } | undefined
-
-  return {
-    id,
-    type,
-    zIndex,
-    x: Number(entry.get('x') ?? 0),
-    y: Number(entry.get('y') ?? 0),
-    w: Number(entry.get('w') ?? 0),
-    h: Number(entry.get('h') ?? 0),
-    rotation: Number(entry.get('rotation') ?? 0),
-    fill: String(entry.get('fill') ?? '#d8dee9'),
-    stroke: String(entry.get('stroke') ?? '#2e3440'),
-    text: content ? content.toString() : '',
-  }
-}
-
-/** Devuelve las formas ya ordenadas para pintar. El consumidor no debe reordenar. */
-export function readShapes(doc: Y.Doc): Shape[] {
-  const shapes: Shape[] = []
-  for (const [id, entry] of shapesMap(doc).entries()) {
-    const shape = toShape(id, entry)
-    if (shape) shapes.push(shape)
-  }
-  return shapes.sort(compareZ)
-}
-
-export function readShape(doc: Y.Doc, id: ShapeId): Shape | null {
-  const entry = shapesMap(doc).get(id)
-  return entry ? toShape(id, entry) : null
-}
-```
-
-- [ ] **Step 4: Escribir `packages/canvas-core/src/presence.ts`**
+- [ ] **Step 3: Escribir `packages/canvas-core/src/presence.ts`**
 
 ```typescript
 import type { ShapeId } from './types.js'
@@ -1936,6 +1942,14 @@ export function staleClientIds(
 }
 ```
 
+- [ ] **Step 4: Añadir el export al `index.ts`**
+
+Modify: `packages/canvas-core/src/index.ts`. Añade la línea al final:
+
+```typescript
+export * from './presence.js'
+```
+
 - [ ] **Step 5: Ejecutar toda la suite del paquete y verla pasar**
 
 Run: `docker compose run --rm api pnpm --filter @canvas/canvas-core test`
@@ -1944,7 +1958,7 @@ Expected: PASS, 16 tests (6 de z-index, 5 de convergencia, 5 de presencia).
 - [ ] **Step 6: Verificar el typecheck del paquete**
 
 Run: `docker compose run --rm api pnpm --filter @canvas/canvas-core typecheck`
-Expected: sin errores. Cierra la deuda que la Task 7 dejó abierta en `index.ts`.
+Expected: sin errores.
 
 - [ ] **Step 7: Verificar la restricción de aislamiento**
 
@@ -2107,10 +2121,20 @@ test('una forma sembrada desde otro cliente aparece en el navegador', async ({ p
   provider.destroy()
 })
 
-test('el stage monta las tres capas del spec', async ({ page }) => {
+test('el stage monta las tres capas del spec, en orden', async ({ page }) => {
   await page.goto(boardUrl(BOARD))
-  // Konva crea un <canvas> por capa.
-  await expect(page.locator('canvas')).toHaveCount(3)
+
+  // Se interroga al Stage real de Konva, no al número de elementos <canvas>: cuántos
+  // canvas crea Konva para una capa vacía es un detalle interno suyo, y afirmar sobre él
+  // haría fallar el test sin que el diseño haya cambiado.
+  await page.waitForFunction(() => (window.__canvas?.layerNames().length ?? 0) === 3, undefined, {
+    timeout: 10_000,
+  })
+  expect(await page.evaluate(() => window.__canvas!.layerNames())).toEqual([
+    'layer-static',
+    'layer-interaction',
+    'layer-overlay',
+  ])
 })
 ```
 
@@ -2238,8 +2262,9 @@ export function ShapeNode({ shape, selected, onSelect, draggable }: ShapeNodePro
 - [ ] **Step 9: Escribir `apps/web/src/canvas/CanvasStage.tsx`**
 
 ```tsx
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Layer, Stage } from 'react-konva'
+import type Konva from 'konva'
 import type { ShapeId } from '@canvas/canvas-core'
 import { ShapeNode } from './ShapeNode.js'
 import { useCanvasDoc } from './useCanvasDoc.js'
@@ -2251,9 +2276,25 @@ export interface CanvasStageProps {
 export function CanvasStage({ boardId }: CanvasStageProps) {
   const { shapes, status } = useCanvasDoc(boardId)
   const [selected, setSelected] = useState<ShapeId | null>(null)
+  const stageRef = useRef<Konva.Stage>(null)
+
+  // Completa el puente de test con los nombres de capa leídos del Stage real. Va aquí
+  // porque este componente es el dueño del Stage; useCanvasDoc no lo conoce.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    window.__canvas = {
+      ...window.__canvas!,
+      layerNames: () => stageRef.current?.getLayers().map((layer) => layer.name()) ?? [],
+    }
+  }, [])
 
   return (
-    <Stage width={window.innerWidth} height={window.innerHeight - 48} data-status={status}>
+    <Stage
+      ref={stageRef}
+      width={window.innerWidth}
+      height={window.innerHeight - 48}
+      data-status={status}
+    >
       {/* Tres capas separadas para que un cursor remoto no repinte las formas en reposo. */}
       <Layer name="layer-static">
         {shapes.map((shape) => (
@@ -2312,7 +2353,10 @@ import type * as Y from 'yjs'
 
 declare global {
   interface Window {
-    __canvas?: { readShapes: () => Shape[] }
+    __canvas?: {
+      readShapes: () => Shape[]
+      layerNames: () => string[]
+    }
     __canvasDoc?: Y.Doc
   }
 }
@@ -2321,10 +2365,13 @@ declare global {
 - [ ] **Step 12: Ejecutar el test y verlo pasar**
 
 Run: `docker compose run --rm e2e pnpm exec playwright test render`
-Expected: PASS, 2 tests. Si `toHaveCount(3)` falla con 1, es que las capas vacías no
-montan `<canvas>`: añade a `layer-interaction` y `layer-overlay` un nodo mínimo, o ajusta
-la aserción a `toHaveCount(1)` **solo** si has comprobado en el DOM que Konva agrupa las
-capas vacías. Documenta lo que encuentres en el commit.
+Expected: PASS, 2 tests.
+
+Los dos puntos donde este test suele fallar y qué significa cada uno: si `layerNames`
+devuelve `[]`, el `useEffect` del puente corrió antes de que el Stage montara —
+comprueba que `stageRef` está pasado al `<Stage>`. Si devuelve menos de tres nombres,
+falta una `<Layer>` o alguna no tiene `name`. En ninguno de los dos casos se ajusta la
+aserción: el spec pide tres capas nombradas y el test las exige.
 
 - [ ] **Step 13: Commit**
 
@@ -2457,8 +2504,9 @@ export function Toolbar({ onCreate, onDelete, canDelete }: ToolbarProps) {
 Modify: `apps/web/src/canvas/CanvasStage.tsx`. Sustituye el componente entero:
 
 ```tsx
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Layer, Stage } from 'react-konva'
+import type Konva from 'konva'
 import { addShape, deleteShapes, type ShapeId, type ShapeType } from '@canvas/canvas-core'
 import { ShapeNode } from './ShapeNode.js'
 import { useCanvasDoc } from './useCanvasDoc.js'
@@ -2481,6 +2529,16 @@ export interface CanvasStageProps {
 export function CanvasStage({ boardId }: CanvasStageProps) {
   const { doc, shapes, status } = useCanvasDoc(boardId)
   const [selected, setSelected] = useState<ShapeId | null>(null)
+  const stageRef = useRef<Konva.Stage>(null)
+
+  // Se conserva de la Task 9: el test de las tres capas depende de este puente.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    window.__canvas = {
+      ...window.__canvas!,
+      layerNames: () => stageRef.current?.getLayers().map((layer) => layer.name()) ?? [],
+    }
+  }, [])
 
   const handleCreate = useCallback(
     (type: ShapeType) => {
@@ -2506,7 +2564,11 @@ export function CanvasStage({ boardId }: CanvasStageProps) {
         <span data-testid="connection-status">{status}</span>
       </header>
 
-      <Stage width={window.innerWidth} height={window.innerHeight - HEADER_HEIGHT}>
+      <Stage
+        ref={stageRef}
+        width={window.innerWidth}
+        height={window.innerHeight - HEADER_HEIGHT}
+      >
         <Layer name="layer-static">
           {shapes.map((shape) => (
             <ShapeNode
@@ -2851,7 +2913,11 @@ test('el cursor desaparece cuando el otro cierra sin despedirse', async ({ brows
 Modify: `apps/web/src/global.d.ts`:
 
 ```typescript
-    __canvas?: { readShapes: () => Shape[]; remoteCursorCount: () => number }
+    __canvas?: {
+      readShapes: () => Shape[]
+      layerNames: () => string[]
+      remoteCursorCount: () => number
+    }
 ```
 
 - [ ] **Step 3: Ejecutar el test y verlo fallar**
