@@ -885,16 +885,30 @@ git commit -m "feat(api): app Hono con health que verifica Postgres y Redis"
     "@hocuspocus/extension-database": "4.4.0",
     "@hocuspocus/extension-redis": "4.4.0",
     "@hocuspocus/server": "4.4.0",
+    "drizzle-orm": "0.45.2",
     "yjs": "13.6.31"
   },
   "devDependencies": {
     "@hocuspocus/provider": "4.4.0",
+    "@types/node": "24.13.3",
+    "@types/pg": "8.15.6",
+    "@types/ws": "8.18.1",
+    "pg": "8.22.0",
     "tsx": "4.23.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10",
     "ws": "8.20.0"
   }
 }
+```
+
+**Por qué aparecen dependencias que "ya trae `@canvas/schema`":** pnpm aísla de forma
+estricta, así que un paquete solo puede importar lo que declara. `src/persistence.ts`
+importa `eq` y `sql` de `drizzle-orm` directamente, y el test importa el tipo `Pool` de
+`pg` y `WebSocket` de `ws`: las tres tienen que estar declaradas aquí aunque `@canvas/schema`
+también las use. `@types/node` hace falta porque el `tsconfig.json` pide `"types": ["node"]`
+y el código usa `process.env` y `Buffer`. La Task 3 tropezó con esto mismo y se resolvió
+añadiéndolas.
 ```
 
 - [ ] **Step 2: Crear `apps/sync/tsconfig.json`**
@@ -1417,6 +1431,7 @@ expone `text: string` derivado, para que el renderer no tenga que conocer `Y.Tex
     "yjs": "13.6.31"
   },
   "devDependencies": {
+    "@types/node": "24.13.3",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   }
@@ -1425,6 +1440,12 @@ expone `text: string` derivado, para que el renderer no tenga que conocer `Y.Tex
 
 `react`, `react-dom` y `konva` **no** aparecen aquí, ni aparecerán. Es la restricción de
 §3.2 del spec expresada donde se puede verificar: en el manifiesto del paquete.
+
+`@types/node` sí aparece, y no contradice lo anterior: son **solo tipos de desarrollo**, sin
+runtime. Hace falta porque la Task 7 usa `crypto.randomUUID()` como generador de id por
+defecto, y con `target: es2023` sin `lib: dom` el global `crypto` no está tipado. El paquete
+sigue sin importar nada de Node ni del DOM — la comprobación del step 7 de la Task 8 lo
+verifica por grep.
 
 - [ ] **Step 2: Crear `packages/canvas-core/tsconfig.json`**
 
