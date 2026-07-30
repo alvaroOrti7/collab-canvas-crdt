@@ -1,0 +1,15 @@
+{
+  "name": "collab-canvas-crdt",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.15.0",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "collab-canvas",
+  "dockerComposeFile": ["../compose.yaml"],
+  "service": "web",
+  "workspaceFolder": "/workspace",
+  "overrideCommand": true,
+  "runServices": ["postgres", "redis"],
+  "postCreateCommand": "pnpm install",
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
+    }
+  }
+}

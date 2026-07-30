@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.local
+.vitest/
+playwright-report/
+test-results/
+.worktrees/
