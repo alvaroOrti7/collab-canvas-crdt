@@ -24,7 +24,11 @@ services:
       POSTGRES_PASSWORD: canvas
       POSTGRES_DB: canvas
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Postgres 18 movió PGDATA a /var/lib/postgresql/18/docker. Montar el volumen en la
+      # ruta heredada /var/lib/postgresql/data hace que la imagen aborte con exit 1;
+      # montar el directorio padre deja que Postgres use su layout versionado dentro del
+      # volumen y mantiene viable un futuro `pg_upgrade --link`.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U canvas -d canvas']
       interval: 5s
