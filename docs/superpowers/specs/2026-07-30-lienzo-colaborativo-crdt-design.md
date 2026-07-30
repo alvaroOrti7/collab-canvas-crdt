@@ -1,10 +1,15 @@
 # Diseño: Lienzo colaborativo en tiempo real con CRDT
 
-> **Artefacto histórico.** Foto del diseño acordado el 2026-07-30. No se actualiza:
-> si el diseño cambia, se escribe un spec nuevo. El estado actual del sistema vive
-> en `docs/arquitectura/` y `docs/referencia/`.
+> **Artefacto.** Foto del diseño acordado el 2026-07-30. Se congela en cuanto arranque la
+> implementación: desde ese punto, un cambio de diseño es un spec nuevo y no una edición
+> de este. Mientras siga en revisión, sí se corrige. El estado actual del sistema vive en
+> `docs/arquitectura/` y `docs/referencia/`.
 
 - **Fecha:** 2026-07-30
+- **Revisión:** 2026-07-30 — refinamientos arquitectónicos: TTL del token y revocación
+  por Redis (§3.1), z-order con índices fraccionarios (§4.1), recolección de cursores
+  fantasma (§5.4), escenario obligatorio de undo colaborativo (§8.1) y accesibilidad del
+  lienzo (§9, fase 3)
 - **Estado:** aprobado, pendiente de plan de implementación
 - **Objetivo del proyecto:** pieza de portfolio / demo técnica
 - **Escaparate elegido:** producto full-stack pulido (no profundidad en sistemas distribuidos ni en rendering)
@@ -71,17 +76,40 @@ Solo `web`, `api` y `sync` publican puertos. `postgres` y `redis` son alcanzable
 Al separar `api` y `sync`, el WebSocket no comparte sesión con el API. Contrato:
 
 1. El cliente pide acceso a un board al `api`.
-2. `api` verifica la membresía y emite un **JWT con TTL de 15 minutos** que incluye
+2. `api` verifica la membresía y emite un **JWT con TTL de 24 horas** que incluye
    `boardId` y `role`.
 3. El cliente abre el WebSocket contra `sync` pasando ese token.
 4. `sync` valida la firma en el hook `onAuthenticate` de Hocuspocus.
 
-El TTL de 15 minutos es deliberadamente corto para que un permiso revocado deje de
-surtir efecto pronto. Obliga a implementar el refresco del token (§7).
-
 `sync` **no** tiene acceso a la tabla de sesiones: solo verifica una firma y lee las
 claims. Esa es la frontera entre ambos servicios y el motivo por el que la separación
 se sostiene sin acoplarlos por la base de datos.
+
+**El TTL es largo a propósito.** Esto es una demo de portfolio: quien la evalúa deja la
+pestaña abierta y vuelve un rato después, y un token de minutos convertiría eso en una
+desconexión en cada visita. El precio de las 24 horas es que **la caducidad del token
+deja de servir como mecanismo de revocación**, así que la revocación pasa a ser
+explícita.
+
+#### Revocación en caliente: dos mecanismos, no uno
+
+| Mecanismo | Qué cubre | Cómo |
+|---|---|---|
+| Evento `revoke_user` en Redis | Conexiones **ya abiertas** | `api` publica `revoke_user: { userId, boardId }`. Todas las réplicas de `sync` están suscritas y cierran de inmediato el WebSocket de ese usuario en ese board |
+| Marca `revoked:` en Redis | **Reconexiones** posteriores | `api` escribe `revoked:{userId}:{boardId}` con TTL igual al del JWT. `onAuthenticate` consulta esa clave y rechaza aunque la firma sea válida |
+
+**El segundo mecanismo no es opcional.** El pub/sub solo alcanza a las conexiones vivas:
+un usuario al que acabas de retirar el acceso pulsa F5, presenta el mismo JWT —válido
+todavía durante horas— y `onAuthenticate` lo admite, porque el evento de revocación ya
+pasó y nadie lo recuerda. Con TTL de 15 minutos ese agujero duraba un cuarto de hora; con
+24 horas dura un día entero.
+
+El TTL de la marca puede igualar el del token: pasado ese plazo el JWT caduca por sí
+solo y la marca deja de hacer falta, así que Redis se limpia sin intervención.
+
+`sync` ya mantiene una conexión a Redis por `extension-redis`; el canal de revocación es
+propio y va **aparte** del que Hocuspocus usa para propagar updates, para no mezclar
+mensajes de control con mensajes de documento.
 
 ### 3.2 Aislamiento de `canvas-core`
 
@@ -92,15 +120,26 @@ Konva**. Konva es un adaptador de render; React, un adaptador de UI.
 Consecuencia buscada: la convergencia CRDT se verifica en Node puro, con varios
 `Y.Doc` en memoria, sin arrancar un navegador.
 
+**Segunda consecuencia, igual de deliberada: Konva es reemplazable.** La decisión de §2
+se mantiene —Konva es lo correcto para el escaparate elegido— pero `canvas-core` no
+importa Konva ni conoce su existencia: expone estado y operaciones, y el renderer se
+suscribe. Sustituirlo más adelante por un motor WebGL propio (PixiJS, o WebGL a pelo con
+instancing) consiste en escribir un adaptador nuevo y borrar el viejo, **sin tocar una
+línea de la convergencia del estado ni un solo test de CRDT**. Esa es la razón de fondo
+de que el paquete exista: el eje de "rendimiento gráfico" queda abierto como fase futura
+en lugar de quedar clausurado por la elección de librería de hoy.
+
 ## 4. Modelo de datos
 
 ### 4.1 Documento Yjs
 
 ```
 doc
-├─ shapes: Y.Map< shapeId → Y.Map<{ type, x, y, w, h, rotation, fill, stroke, … }> >
-├─ order:  Y.Array<shapeId>                    # z-order
-└─ content: Y.Text                             # dentro de un shape de tipo texto
+└─ shapes: Y.Map< shapeId → Y.Map<{
+                       type, x, y, w, h, rotation, fill, stroke,
+                       zIndex,      # string: índice fraccionario ("a0", "a0V", "a1")
+                       content,     # Y.Text, solo en formas de tipo texto
+                     }> >
 ```
 
 **Cada forma es un `Y.Map` anidado, nunca un objeto JSON plano.** Con un objeto plano,
@@ -108,11 +147,38 @@ dos usuarios que a la vez cambien uno el color y otro la posición producirían 
 last-write-wins que descarta uno de los dos cambios. Con `Y.Map` anidado la
 granularidad de merge es por propiedad y ambos cambios sobreviven.
 
-El z-order va en un `Y.Array` separado, que es la estructura que converge
-correctamente cuando el orden importa. El texto de una forma de tipo texto es `Y.Text`,
-de modo que la edición de texto también es colaborativa carácter a carácter.
+El texto de una forma de tipo texto es `Y.Text`, de modo que la edición de texto también
+es colaborativa carácter a carácter.
 
 Tipos de forma en el MVP: rectángulo, círculo, texto y flecha.
+
+#### Z-order con índices fraccionarios, no con un array central
+
+**No hay ninguna estructura de orden compartida.** El z-order es una propiedad `zIndex`
+de tipo string dentro de cada forma, y el orden de pintado se obtiene ordenando las
+formas por ese string.
+
+El motivo es que un `Y.Array<shapeId>` centralizado es un punto único de contención:
+mover una forma obliga a borrar e insertar en el array, y dos usuarios reordenando a la
+vez producen intercalaciones (interleaving) y duplicados que convergen sin conflicto pero
+hacia un orden que ninguno de los dos pidió. Con índice fraccionario, reordenar es
+**escribir una propiedad de una sola forma**: se calcula una clave que caiga entre los
+dos vecinos de destino (`generateKeyBetween`, de `fractional-indexing`) y se asigna. El
+merge vuelve a ser por propiedad, igual que el resto del modelo, y dos personas
+reordenando formas distintas no se pisan.
+
+**Desempate obligatorio.** Dos clientes que insertan en el mismo hueco simultáneamente
+pueden generar la **misma** clave fraccionaria. Yjs converge sin problema —cada `Y.Map`
+conserva su valor— pero el orden de pintado quedaría indefinido y cada cliente podría
+resolver el empate a su manera: **estado convergente, pantallas divergentes**, que es el
+peor tipo de bug porque el CRDT parece estar funcionando. El comparador es por tanto
+`(zIndex, shapeId)`, con el `shapeId` como segundo criterio determinista. Es una línea de
+código, y sin ella el fallo aparece justo cuando dos personas usan la demo delante de
+alguien.
+
+El coste asumido es mantener la lista de pintado ordenada por `zIndex` en el cliente. Se
+memoiza y solo se recalcula cuando cambia el conjunto de formas o algún `zIndex`, nunca
+por frame.
 
 ### 4.2 Postgres
 
@@ -176,6 +242,27 @@ Tres capas, para que un cursor remoto no fuerce el repintado del lienzo completo
 interpolan con lerp hacia la última posición conocida en **un único bucle
 `requestAnimationFrame` compartido por todos los cursores**, no uno por cursor.
 
+#### Recolección de cursores fantasma
+
+Cuando un cliente cierra la pestaña envía su mensaje de salida y su estado de awareness
+se limpia solo. El problema son las desconexiones **abruptas** —partición de red,
+portátil cerrado, WiFi caído—: ese mensaje nunca llega, el socket queda semi-abierto, TCP
+no avisa, y `sync` sigue creyendo que el cliente está ahí mientras su cursor se queda
+clavado en la pantalla de todos los demás. En una demo, un cursor con el nombre de
+alguien que se fue hace diez minutos es precisamente el detalle que delata que nadie
+pensó en el caso.
+
+Dos defensas, en capas distintas:
+
+| Capa | Mecanismo | Umbral |
+|---|---|---|
+| `sync` | **Ping/pong a nivel WebSocket.** Si el cliente no responde al ping se termina la conexión; al terminarla, Hocuspocus purga su entrada de awareness y lo propaga a la sala y, vía Redis, a las demás réplicas | 30 s sin pong |
+| `web` | **Filtro por antigüedad en el render.** El overlay descarta todo cursor cuyo último update supere el umbral, sin esperar a que el servidor lo confirme | 30 s sin update |
+
+La defensa del cliente no es redundante: si la réplica que sostenía la conexión muerta se
+cae, nadie emite la purga y el fantasma sobreviviría. El filtro local hace que la UI no
+dependa de que el servidor acierte.
+
 ### 5.5 Offline
 
 `y-indexeddb` como provider local. El board carga al instante desde IndexedDB, las
@@ -194,8 +281,9 @@ vive en `sync`; la UI solo refleja el estado.
 | Caso | Comportamiento requerido |
 |---|---|
 | Pérdida de conexión | Reintento con backoff. La UI muestra `conectado / reconectando / offline`. Yjs sigue aceptando ediciones locales. |
-| JWT caducado a mitad de sesión | El provider solicita un token nuevo al `api` **antes** de reconectar. Sin esto, el usuario se queda desconectado en silencio al expirar el token. |
-| Permiso revocado en caliente | `sync` rechaza la siguiente conexión; el cliente pasa a modo lectura con aviso visible. |
+| JWT caducado a mitad de sesión | Con TTL de 24 h es infrecuente, pero sigue pasando en una pestaña abandonada un fin de semana. El provider pide un token nuevo al `api` **antes** de reconectar; si el `api` responde 403, la sesión pasa a modo lectura en lugar de reintentar en bucle. |
+| Permiso revocado en caliente | `api` publica `revoke_user` en Redis y `sync` cierra el socket al instante (§3.1). El cliente pasa a modo lectura con aviso visible y **no** reintenta: la marca `revoked:` rechazaría la reconexión de todos modos. |
+| Cursor fantasma por desconexión abrupta | Ping/pong con corte a los 30 s en `sync`, más filtro por antigüedad en el render del cliente (§5.4). |
 | Postgres caído | `sync` continúa sirviendo la sala desde memoria y reintenta los snapshots. Un fallo de persistencia no tumba una sesión en curso. |
 | Snapshot ilegible o corrupto | Fallar la carga con error explícito. **Nunca** arrancar un documento vacío: el usuario editaría encima y el board real se perdería. |
 
@@ -206,13 +294,42 @@ Se sigue TDD: el test primero.
 | Nivel | Herramienta | Qué cubre |
 |---|---|---|
 | Unitario | Vitest sobre Node puro | Operaciones de `canvas-core` e invariantes de las formas |
-| Convergencia CRDT | Vitest, varios `Y.Doc` en memoria | Operaciones concurrentes sobre la misma forma y sobre el z-order |
-| Integración | Cliente Hocuspocus real contra `sync` real | Rechazo del `viewer` en servidor y recuperación de estado tras reconectar |
-| E2E | Playwright, dos contextos de navegador | Dibujar en uno y verlo aparecer en el otro; cursores visibles |
+| Convergencia CRDT | Vitest, varios `Y.Doc` en memoria | Operaciones concurrentes sobre la misma forma; reordenamientos simultáneos, **incluido el empate de claves fraccionarias y su desempate por `shapeId`** (§4.1) |
+| Integración | Cliente Hocuspocus real contra `sync` real | Rechazo del `viewer` en servidor; revocación en caliente por `revoke_user`; **rechazo de la reconexión con marca `revoked:` presentando un JWT aún válido**; recuperación de estado tras reconectar |
+| E2E | Playwright, dos contextos de navegador | Dibujar en uno y verlo aparecer en el otro; cursores visibles; purga del cursor fantasma al matar un contexto sin cerrarlo limpiamente |
 | **Partición de red** | Vitest o Playwright | Desconectar un cliente, editar en ambos, reconectar y verificar convergencia |
+| **Undo colaborativo** | Vitest, dos `Y.Doc` con `UndoManager` | El escenario de §8.1, obligatorio |
 
 El test de partición es el que verifica la promesa central del CRDT y es de
 obligado cumplimiento antes de considerar la fase 1 terminada.
+
+### 8.1 El escenario obligatorio de undo colaborativo
+
+Es el caso que rompe las implementaciones ingenuas, y hay que fijarlo por test en vez de
+descubrirlo delante de alguien:
+
+1. **A** crea un rectángulo.
+2. **B** le cambia el color.
+3. **A** pulsa `Ctrl+Z`.
+
+Con `trackedOrigins` acotado al origen local de A, el `UndoManager` de A solo rastrea las
+operaciones de A, así que deshace **la creación**: el rectángulo desaparece y el cambio de
+color de B se va con él. Es coherente —no puedes conservar el color de un objeto que ya no
+existe— pero es una **decisión de producto que hay que tomar explícitamente**, porque la
+alternativa (bloquear el undo de un objeto que otros han modificado) también es defendible
+y da otro producto distinto.
+
+Comportamiento que el test fija:
+
+| Paso | Estado esperado |
+|---|---|
+| A deshace | El rectángulo se elimina en **ambos** clientes; el cambio de color de B desaparece con el objeto |
+| A rehace | El rectángulo reaparece **con su color original**, no con el de B: el `UndoManager` de A restaura el estado que A creó, y la operación de B nunca estuvo en su pila |
+| B pulsa `Ctrl+Z` antes que A | Se revierte **solo el color**; el rectángulo permanece. Cada pila es independiente |
+
+El tercer caso es el que confirma que `trackedOrigins` está bien acotado: si el undo de B
+borrara el rectángulo, el filtro de orígenes no está funcionando y el bug estaría oculto
+tras un test que solo probara el caso 1.
 
 ## 9. Fases
 
@@ -240,12 +357,37 @@ JWT de sala hacia `sync`.
 
 ### Fase 3 — Pulido
 `y-indexeddb`, indicador de estado de conexión, undo/redo, export PNG/SVG, thumbnails
-de board.
-**Hecho cuando:** se puede editar sin red y el documento converge al volver.
+de board y accesibilidad básica del lienzo.
+**Hecho cuando:** se puede editar sin red y el documento converge al volver, y un lector
+de pantalla puede recorrer el contenido del lienzo.
 
-Detalle obligatorio de esta fase: **el undo colaborativo**. Un `Ctrl+Z` ingenuo deshace
-el último cambio del documento, que puede ser el de otro usuario. Se implementa con
-`Y.UndoManager` y `trackedOrigins` para que solo revierta las operaciones propias.
+Detalle obligatorio de esta fase: **el undo colaborativo**. Un `Ctrl+Z` ingenuo deshace el
+último cambio del documento, que puede ser el de otro usuario. Se implementa con
+`Y.UndoManager` y `trackedOrigins` para que solo revierta las operaciones propias, y su
+comportamiento en concurrencia queda fijado por el test de §8.1.
+
+#### Accesibilidad: árbol DOM espejo
+
+Un `<canvas>` es un agujero negro para un lector de pantalla: un píxel no tiene
+semántica. Esta fase incluye un **árbol DOM oculto paralelo** que se suscribe a
+`canvas-core` y mantiene un elemento por forma con su tipo, su texto y su posición
+descrita en palabras ("rectángulo, arriba a la izquierda").
+
+Requisitos concretos:
+
+- El contenedor se oculta **visualmente, no semánticamente**: técnica `sr-only`
+  (`clip-path` sobre una caja de 1×1). **Nunca** `display: none` ni
+  `visibility: hidden`, que lo esconderían también del lector de pantalla y dejarían la
+  función sin efecto.
+- El orden en el DOM sigue el **orden de lectura** (arriba-abajo, izquierda-derecha), no
+  el `zIndex`: el z-order es una propiedad de pintado y no dice nada sobre en qué orden
+  tiene sentido escuchar el contenido.
+- Las formas de texto exponen su contenido real; las geométricas, una descripción
+  generada.
+- El `<canvas>` lleva `role="application"` y un `aria-label` con el resumen del board.
+
+Alcance honesto: esto hace el lienzo **navegable y legible**, no editable por teclado. La
+edición completa sin ratón es un proyecto en sí mismo y queda fuera (§10).
 
 ### Fase 4 — Operación y deploy
 VPS propio con la misma composición, Caddy o Traefik para TLS, backups de Postgres,
@@ -262,6 +404,8 @@ réplicas reales, no descrito en el README.
 - Aplicación móvil nativa
 - Interfaz de time-travel del historial (Yjs conserva los updates, pero la UI de
   navegación histórica es otro proyecto)
+- Edición completa del lienzo por teclado. La fase 3 cubre lectura accesible, no
+  creación ni manipulación de formas sin ratón
 
 ## 11. Riesgos conocidos
 
@@ -271,3 +415,5 @@ réplicas reales, no descrito en el README.
 | Crecimiento del documento Yjs con el uso prolongado | Snapshots con debounce y, si llegara a hacer falta, `Y.encodeStateAsUpdate` para compactar. No se optimiza antes de medir |
 | Divergencia entre desarrollo y producción | La misma composición de OrbStack se despliega en el VPS; la configuración va por variables de entorno |
 | `react-konva` acoplado a la versión de React | La paridad es estricta: `react-konva` 19.x exige React ≥ 19.2. Fijar ambas versiones y actualizarlas juntas |
+| Árbol DOM espejo desincronizado del lienzo | Ambas representaciones se suscriben a `canvas-core`; ninguna deriva de la otra. Un espejo que leyera del scene graph de Konva divergiría en silencio en cuanto el renderer cambiara (§3.2) |
+| Claves fraccionarias degeneradas tras muchos reordenamientos | Las claves crecen en longitud con reordenamientos repetidos en el mismo hueco. Es un problema de bytes, no de correctitud, y solo aparece con miles de operaciones sobre la misma posición. Si llegara a medirse, se renumera el board en una transacción. No se optimiza antes |
