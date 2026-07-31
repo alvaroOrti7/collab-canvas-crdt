@@ -82,4 +82,4 @@ motor WebGL sin tocar la lógica de estado.
 
 ## Licencia
 
-Sin definir todavía.
+[MIT](LICENSE) © Álvaro Ortí Segovia
