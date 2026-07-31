@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { sql } from 'drizzle-orm'
 import * as Y from 'yjs'
-import { HocuspocusProvider, HocuspocusProviderWebsocket } from '@hocuspocus/provider'
-import { WebSocket } from 'ws'
+import { HocuspocusProvider } from '@hocuspocus/provider'
 import { createDb, type Db } from '@canvas/schema'
 import { createSyncServer } from '../src/server.js'
 import { createPersistence } from '../src/persistence.js'
@@ -32,26 +31,23 @@ async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<vo
   }
 }
 
-async function connect(port: number, doc: Y.Doc): Promise<HocuspocusProvider> {
-  // `WebSocketPolyfill` pertenece a la configuración del websocket, no a la del provider:
-  // el tipo del provider solo admite `url` + `preserveTrailingSlash` cuando se le pasa una
-  // url, así que el polyfill hay que inyectarlo construyendo el websocket a mano y
-  // pasándolo como `websocketProvider`. Node no trae un WebSocket compatible.
-  const websocketProvider = new HocuspocusProviderWebsocket({
-    url: `ws://127.0.0.1:${port}`,
-    WebSocketPolyfill: WebSocket,
-  })
-
+async function connect(port: number, doc: Y.Doc, name: string = BOARD): Promise<HocuspocusProvider> {
   let provider!: HocuspocusProvider
 
-  // Se espera vía el callback `onSynced` de la configuración, que está en los tipos del
-  // provider, en lugar de `provider.on('synced', ...)`: ese nombre de evento no está
-  // garantizado por la API pública y un nombre equivocado dejaría el test colgado en vez
-  // de fallar.
+  // Dos decisiones no obvias, ambas verificadas empíricamente contra Node 24.18.1:
+  //
+  // 1. Se pasa `url` a secas, sin `WebSocketPolyfill` ni un `websocketProvider` externo:
+  //    Node 24 ya trae un WebSocket global compatible. Inyectar el polyfill obliga a
+  //    construir el websocket a mano, y con un websocket externo el provider queda con
+  //    `manageSocket: false` y no se registra salvo que se llame a `provider.attach()`,
+  //    con lo que la conexión muere por timeout. Toda esa cadena es evitable.
+  // 2. Se espera con el callback `onSynced` de la configuración, no con
+  //    `provider.on('synced', ...)`: ese nombre de evento no está en los tipos públicos y
+  //    equivocarlo dejaría el test colgado en lugar de fallar.
   await new Promise<void>((resolve) => {
     provider = new HocuspocusProvider({
-      websocketProvider,
-      name: BOARD,
+      url: `ws://127.0.0.1:${port}`,
+      name,
       document: doc,
       onSynced: () => resolve(),
     })
@@ -92,9 +88,31 @@ test('el estado del documento sobrevive a un reinicio del servidor', async () =>
 })
 
 test('el snapshot queda escrito en board_docs', async () => {
-  const rows = await db.execute(sql`SELECT ydoc FROM board_docs WHERE board_id = ${BOARD}`)
+  // Board y servidor propios: este test no debe depender de que el anterior haya
+  // escrito nada (si se ejecuta solo, con `vitest -t`, o el fichero se reordena, el
+  // anterior podría no haber corrido y esta comprobación no tendría nada que leer).
+  const SNAPSHOT_BOARD = 'board-snapshot'
+  await db.execute(sql`INSERT INTO boards (id, title) VALUES (${SNAPSHOT_BOARD}, 'snapshot')
+                       ON CONFLICT (id) DO NOTHING`)
+
+  const server = createSyncServer({ port: 4103, db })
+  await server.listen()
+
+  const doc = new Y.Doc()
+  const provider = await connect(4103, doc, SNAPSHOT_BOARD)
+  doc.getMap('shapes').set('s1', 'rectangulo')
+  await waitFor(
+    () => server.hocuspocus.documents.get(SNAPSHOT_BOARD)?.getMap('shapes').get('s1') === 'rectangulo',
+  )
+  server.hocuspocus.flushPendingStores()
+  provider.destroy()
+  await server.destroy()
+
+  const rows = await db.execute(sql`SELECT ydoc FROM board_docs WHERE board_id = ${SNAPSHOT_BOARD}`)
   expect(rows.rows).toHaveLength(1)
   expect((rows.rows[0]!.ydoc as Buffer).byteLength).toBeGreaterThan(0)
+
+  await db.execute(sql`DELETE FROM boards WHERE id = ${SNAPSHOT_BOARD}`)
 })
 
 test('un snapshot ilegible lanza en lugar de servir un documento vacío', async () => {

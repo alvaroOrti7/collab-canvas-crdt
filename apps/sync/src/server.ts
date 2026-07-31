@@ -27,7 +27,10 @@ export function createSyncServer({ port, db, redisUrl }: SyncServerOptions): Ser
   // acoplarlos a un servicio que no están verificando.
   if (redisUrl) {
     const parsed = new URL(redisUrl)
-    extensions.push(new Redis({ host: parsed.hostname, port: Number(parsed.port) }))
+    // Sin puerto explícito en la url, `parsed.port` es '' y `Number('')` da 0 — un puerto
+    // inválido que pisaría el default correcto de la extensión (6379).
+    const redisPort = parsed.port ? Number(parsed.port) : 6379
+    extensions.push(new Redis({ host: parsed.hostname, port: redisPort }))
   }
 
   return new Server({

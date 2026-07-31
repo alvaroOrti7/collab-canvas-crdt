@@ -20,11 +20,9 @@
     "@hocuspocus/provider": "4.4.0",
     "@types/node": "24.13.3",
     "@types/pg": "8.15.6",
-    "@types/ws": "8.18.1",
     "pg": "8.22.0",
     "tsx": "4.23.1",
     "typescript": "7.0.2",
-    "vitest": "4.1.10",
-    "ws": "8.20.0"
+    "vitest": "4.1.10"
   }
 }
