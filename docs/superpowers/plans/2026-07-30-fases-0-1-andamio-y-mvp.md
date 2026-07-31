@@ -641,16 +641,24 @@ git commit -m "feat(schema): tablas de boards, miembros y snapshots con Drizzle"
   "dependencies": {
     "@canvas/schema": "workspace:*",
     "@hono/node-server": "2.0.12",
+    "drizzle-orm": "0.45.2",
     "hono": "4.12.32",
     "redis": "6.1.0"
   },
   "devDependencies": {
+    "@types/node": "24.13.3",
     "tsx": "4.23.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   }
 }
 ```
+
+`drizzle-orm` y `@types/node` no son opcionales aunque parezcan heredables: pnpm aísla de
+forma estricta y un paquete solo puede importar lo que declara. `src/routes/health.ts`
+importa `sql` de `drizzle-orm` directamente, y el `tsconfig.json` pide `"types": ["node"]`
+mientras el código usa `process.env`. Sin ellas, el typecheck falla con `TS2688` y el import
+de `drizzle-orm` es una dependencia fantasma.
 
 **Por qué `tsx` y no `node --watch` con type stripping**, que fue el primer intento y no
 funciona en este monorepo (verificado empíricamente con Node 24.18.1):
