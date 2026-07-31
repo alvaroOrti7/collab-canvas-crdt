@@ -17,4 +17,4 @@ Todavía vacía. Se irá poblando durante la implementación:
 
 - `arquitectura/` — por qué el sistema es como es: capas, flujos, ADR
 - `referencia/` — qué existe y qué garantiza: esquema de datos, endpoints, variables de entorno
-- `guias/` — cómo hacer X: levantar el entorno, añadir un tipo de forma, desplegar
+- [Guía: entorno de desarrollo](guias/entorno-de-desarrollo.md) — arrancar los cinco servicios, trabajar dentro del devcontainer y comandos habituales.

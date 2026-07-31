@@ -1251,7 +1251,7 @@ git commit -m "feat(sync): servidor Hocuspocus con persistencia en Postgres y ti
   "devDependencies": {
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.4",
-    "@vitejs/plugin-react": "5.1.0",
+    "@vitejs/plugin-react": "6.0.5",
     "typescript": "7.0.2",
     "vite": "8.2.0",
     "vitest": "4.1.10"
@@ -1394,7 +1394,7 @@ servicio `web` y levanta `postgres` y `redis`. Los procesos de las apps los arra
 ## Comandos habituales
 
     pnpm -r test                              # toda la suite
-    pnpm --filter @canvas/canvas-core test    # un paquete
+    pnpm --filter @canvas/schema test         # un paquete
     pnpm --filter @canvas/schema db:generate  # migración tras cambiar tablas
     pnpm --filter @canvas/schema db:migrate   # aplicarla
 

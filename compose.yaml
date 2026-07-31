@@ -66,6 +66,11 @@ services:
     command: pnpm --filter web dev
     ports:
       - '5173:5173'
+    environment:
+      DATABASE_URL: postgres://canvas:canvas@postgres:5432/canvas
+      REDIS_URL: redis://redis:6379
+      VITE_API_URL: http://localhost:3001
+      VITE_SYNC_URL: ws://localhost:1234
 
 volumes:
   pgdata:
