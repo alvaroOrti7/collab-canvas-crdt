@@ -900,12 +900,10 @@ git commit -m "feat(api): app Hono con health que verifica Postgres y Redis"
     "@hocuspocus/provider": "4.4.0",
     "@types/node": "24.13.3",
     "@types/pg": "8.15.6",
-    "@types/ws": "8.18.1",
     "pg": "8.22.0",
     "tsx": "4.23.1",
     "typescript": "7.0.2",
-    "vitest": "4.1.10",
-    "ws": "8.20.0"
+    "vitest": "4.1.10"
   }
 }
 ```
@@ -957,7 +955,6 @@ import { afterAll, beforeAll, expect, test } from 'vitest'
 import { sql } from 'drizzle-orm'
 import * as Y from 'yjs'
 import { HocuspocusProvider } from '@hocuspocus/provider'
-import { WebSocket } from 'ws'
 import { createDb, type Db } from '@canvas/schema'
 import { createSyncServer } from '../src/server.js'
 import { createPersistence } from '../src/persistence.js'
@@ -978,18 +975,37 @@ afterAll(async () => {
   await pool.end()
 })
 
+/** Espera activa determinista: reintenta hasta que la condición se cumple o expira. */
+async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('waitFor: la condición no se cumplió a tiempo')
+    await new Promise((r) => setTimeout(r, 20))
+  }
+}
+
 async function connect(port: number, doc: Y.Doc): Promise<HocuspocusProvider> {
-  const provider = new HocuspocusProvider({
-    url: `ws://127.0.0.1:${port}`,
-    name: BOARD,
-    document: doc,
-    // El entorno de Node no trae WebSocket global compatible con el provider.
-    WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket,
-  })
+  let provider!: HocuspocusProvider
+
+  // Dos decisiones no obvias, ambas verificadas empíricamente contra Node 24.18.1:
+  //
+  // 1. Se pasa `url` a secas, sin `WebSocketPolyfill` ni un `websocketProvider` externo:
+  //    Node 24 ya trae un WebSocket global compatible. Inyectar el polyfill obliga a
+  //    construir el websocket a mano, y con un websocket externo el provider queda con
+  //    `manageSocket: false` y no se registra salvo que se llame a `provider.attach()`,
+  //    con lo que la conexión muere por timeout. Toda esa cadena es evitable.
+  // 2. Se espera con el callback `onSynced` de la configuración, no con
+  //    `provider.on('synced', ...)`: ese nombre de evento no está en los tipos públicos y
+  //    equivocarlo dejaría el test colgado en lugar de fallar.
   await new Promise<void>((resolve) => {
-    if (provider.isSynced) return resolve()
-    provider.on('synced', () => resolve())
+    provider = new HocuspocusProvider({
+      url: `ws://127.0.0.1:${port}`,
+      name: BOARD,
+      document: doc,
+      onSynced: () => resolve(),
+    })
   })
+
   return provider
 }
 
@@ -1001,9 +1017,15 @@ test('el estado del documento sobrevive a un reinicio del servidor', async () =>
   const providerA = await connect(4101, docA)
   docA.getMap('shapes').set('s1', 'rectangulo')
 
+  // El `set` de arriba es local y sincrónico, pero el update viaja al servidor de forma
+  // asíncrona: sin esperar a que llegue, `flushPendingStores()` persistiría un documento
+  // que todavía no contiene la forma. Se espera consultando el documento del servidor, que
+  // es determinista, en lugar de dormir un rato.
+  await waitFor(() => first.hocuspocus.documents.get(BOARD)?.getMap('shapes').get('s1') === 'rectangulo')
+
   // Fuerza el flush de los onStoreDocument pendientes antes de tirar el servidor,
-  // en lugar de esperar el debounce de 2 s.
-  await first.hocuspocus.storeDocumentHooks()
+  // en lugar de esperar el debounce de 2 s. Devuelve void, no una promesa.
+  first.hocuspocus.flushPendingStores()
   providerA.destroy()
   await first.destroy()
 
@@ -1045,12 +1067,12 @@ test('un snapshot ilegible lanza en lugar de servir un documento vacío', async 
 })
 ```
 
-> **Nota para el ejecutor:** `storeDocumentHooks()` es el nombre que aparece en los
-> tipos de `Hocuspocus` como "immediately execute all pending debounced onStoreDocument
-> calls". Si al ejecutar el test el método no existe con ese nombre exacto, localízalo
-> con `grep -n "pending debounced" -A 4 node_modules/@hocuspocus/server/dist/index.d.ts`
-> y usa el que declare el tipo. **No sustituyas la llamada por un `sleep`**: haría el
-> test lento y no deterministamente correcto.
+> **Nota para el ejecutor:** `flushPendingStores()` está verificado contra los tipos de
+> `@hocuspocus/server` 4.4.0 — es el método documentado como *"immediately execute all
+> pending debounced onStoreDocument calls"* y devuelve `void`, no una promesa. No lo
+> confundas con `storeDocumentHooks(document, hookPayload, immediately?)`, que también
+> existe pero exige tres argumentos y opera sobre un documento concreto. **No sustituyas la
+> llamada por un `sleep`**: haría el test lento y no deterministamente correcto.
 
 - [ ] **Step 5: Ejecutar el test y verlo fallar**
 
@@ -1137,7 +1159,15 @@ export function createSyncServer({ port, db, redisUrl }: SyncServerOptions): Ser
 
   // Redis solo aporta con más de una réplica. En los tests se omite para no
   // acoplarlos a un servicio que no están verificando.
-  if (redisUrl) extensions.push(new Redis({ redis: { url: redisUrl } }))
+  if (redisUrl) {
+    // `host` y `port` son las dos primeras propiedades de la configuración de la extensión,
+    // y es la forma correcta de configurarla. Ojo con dos alternativas que NO funcionan:
+    // `redis: { url }` hace que la extensión llame `duplicate()` sobre un objeto plano
+    // ("redis.duplicate is not a function"), porque ese campo espera una instancia ya
+    // creada; y meter host/port dentro de `options` deja la conexión en ECONNREFUSED.
+    const parsed = new URL(redisUrl)
+    extensions.push(new Redis({ host: parsed.hostname, port: Number(parsed.port) }))
+  }
 
   return new Server({
     port,
@@ -2160,7 +2190,6 @@ Verifica el camino servidor → cliente sin depender todavía de la UI de creaci
 import { expect, test } from '@playwright/test'
 import * as Y from 'yjs'
 import { HocuspocusProvider } from '@hocuspocus/provider'
-import { WebSocket } from 'ws'
 import { addShape } from '@canvas/canvas-core'
 import { boardUrl, shapesIn, waitForShapeCount } from './helpers.js'
 
@@ -2168,13 +2197,19 @@ const BOARD = 'e2e-render'
 
 test('una forma sembrada desde otro cliente aparece en el navegador', async ({ page }) => {
   const doc = new Y.Doc()
-  const provider = new HocuspocusProvider({
-    url: process.env.SYNC_URL ?? 'ws://localhost:1234',
-    name: BOARD,
-    document: doc,
-    WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket,
+
+  // Sin `WebSocketPolyfill` ni dependencia `ws`: Node 24 trae un WebSocket global
+  // compatible, verificado empíricamente. Y se espera con el callback `onSynced` de la
+  // configuración, no con `provider.on('synced', ...)`, que no está en los tipos públicos.
+  let provider!: HocuspocusProvider
+  await new Promise<void>((resolve) => {
+    provider = new HocuspocusProvider({
+      url: process.env.SYNC_URL ?? 'ws://localhost:1234',
+      name: BOARD,
+      document: doc,
+      onSynced: () => resolve(),
+    })
   })
-  await new Promise<void>((resolve) => provider.on('synced', () => resolve()))
 
   addShape(doc, { type: 'rect', x: 40, y: 60, w: 120, h: 80, fill: '#ff0000' }, 'seeded')
 
