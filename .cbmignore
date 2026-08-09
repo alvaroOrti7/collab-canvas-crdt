@@ -1,0 +1,87 @@
+# .cbmignore — qué se queda FUERA del grafo de codebase-memory-mcp.
+#
+# Sembrado desde ~/.config/dev-templates/cbmignore. Edítalo sin miedo: el
+# sembrador (`repo-templates`) solo crea este fichero si NO existe, nunca lo
+# sobrescribe. Va versionado, así que tus compañeros heredan el mismo criterio.
+#
+# LO QUE MÁS IMPORTA ENTENDER: la lista interna de exclusiones DEPENDE DEL MODO
+# de indexado. Verificado el 2026-07-29 indexando el mismo repo dos veces con un
+# símbolo-marcador por directorio:
+#   · mode=fast/moderate → ~25 directorios excluidos (docs, scripts, migrations,
+#     fixtures, testdata, __tests__, public, assets, examples, generated…).
+#   · mode=full (que es el DEFAULT de index_repository, y el que usa tu índice
+#     real) → solo 4 exclusiones duras: vendor, temp, deploy, .git.
+# O sea: en el modo por defecto, docs/, scripts/, fixtures/ y migrations/ SÍ se
+# indexan. En el repo real de IncidentDashBoard, docs/ aporta 356 nodos Section
+# de 3678. No dar por tapado nada de eso.
+#
+# Sí siguen cubiertos en todos los modos, sin repetirlos aquí:
+#   · node_modules/, dist/, build/, coverage/, .next/, .venv/… → los cubre tu
+#     ~/.gitignore_global, y el indexador respeta la cadena de git.
+#   · Binarios y datos por sufijo (.png, .sqlite, .lock, .map, lockfiles…) → los
+#     filtra por extensión ANTES de leer los ficheros de ignore, en cualquier modo.
+# Verificado: package-lock.json, *.map y *.sqlite generan CERO nodos en modo full,
+# por eso ya no están en esta plantilla.
+#
+# Este fichero es para el único caso que git no puede cubrir: ficheros que SÍ
+# quieres versionar pero que son ruido en el grafo de código.
+#
+# Sintaxis estilo gitignore: *, ?, **, clases [a-z], "/" inicial para anclar a
+# la raíz, "/" final para solo-directorios. Verificado que funcionan "dir/",
+# "**/nested/" y globs de fichero ("*.min.js", "*.generated.js") — y que TODO
+# ello sigue funcionando en mode=full.
+#
+# Tres reglas de la letra pequeña (docs/cbmignore.md del proyecto):
+#   · Solo cuenta el .cbmignore de la RAÍZ del repo; los de subdirectorios se
+#     ignoran. En un repo con varios subproyectos, escribe las rutas desde la
+#     raíz (p. ej. "backend/fixtures/") o sin "/" para que casen a cualquier
+#     profundidad.
+#   · La negación "!" solo rescata de la capa de excludes globales de git. NO
+#     puede recuperar lo que ya excluyeron la lista interna, el .gitignore del
+#     repo o un .gitignore anidado. Si necesitas indexar algo que git ignora,
+#     el sitio donde arreglarlo es el .gitignore, no aquí.
+#   · Un directorio excluido no se recorre: no puedes re-incluir un fichero
+#     cuyo padre está excluido. Y los cambios aquí no se aplican hasta el
+#     siguiente reindexado.
+
+# --- Dumps y esquemas SQL ---
+# Verificado: un .sql genera File + Module + UNA Variable por tabla. Un DDL
+# grande mete decenas de nodos que no se pueden trazar. Contrapartida: search_code
+# deja de ver el DDL, así que la autoridad pasa a ser tu doc de contrato de DB.
+*.sql
+*.dump
+
+# --- Datos tabulares: File + Module, cero símbolos ---
+*.csv
+
+# --- Bundles y terceros embebidos (sí trabajan en modo full: verificado) ---
+*.min.js
+*.min.css
+*.bundle.js
+
+# --- Código generado: patrón de FICHERO, no de directorio ---
+# A propósito NO se excluyen los directorios generated/ ni __generated__/.
+# Motivo verificado: en modo full una exclusión de directorio es real y un
+# directorio excluido NO se recorre (y "!" no lo rescata). Muchísimos proyectos
+# JS/TS ponen en src/generated/ un cliente de API REAL e importado
+# (openapi-generator, GraphQL codegen, Prisma): al excluirlo desaparecen los
+# nodos Y las aristas CALLS, así que sus llamantes parecen no llamar a nada y
+# sus exports parecen código muerto. Eso rompería justo la regla de no borrar
+# código muerto con una sola fuente. Si en un proyecto concreto sabes que dentro
+# no hay nada importado, añade allí "**/generated/" — no aquí.
+*.generated.*
+**/__snapshots__/
+
+# --- Histórico: documenta el pasado, no el estado actual ---
+**/docs/archive/
+**/docs/superpowers/
+
+# --- Específico de este proyecto: añade debajo ---
+# Candidatos habituales que NO pongo por defecto porque pueden contener lógica
+# real y, siendo directorios, no se pueden rescatar con "!":
+#   **/migrations/   (migraciones con transformaciones de datos)
+#   **/fixtures/     (factorías que usan los tests)
+#   **/templates/    (a veces son plantillas de email en JS)
+#   **/*.test.*      (en modo full los tests se indexan: 123 nodos en
+#                     IncidentDashBoard; excluirlos abarata el grafo pero pierdes
+#                     el "quién ejercita esta función")

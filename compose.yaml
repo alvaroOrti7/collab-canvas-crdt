@@ -70,7 +70,25 @@ services:
       DATABASE_URL: postgres://canvas:canvas@postgres:5432/canvas
       REDIS_URL: redis://redis:6379
       VITE_API_URL: http://localhost:3001
-      VITE_SYNC_URL: ws://localhost:1234
+
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.62.1-noble
+    profiles: ['test']
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      E2E_BASE_URL: http://web:5173
+      SYNC_URL: ws://sync:1234
+      DATABASE_URL: postgres://canvas:canvas@postgres:5432/canvas
+    depends_on:
+      - web
+      - sync
+    # La imagen oficial de Playwright trae Node y corepack, pero no un binario `pnpm`
+    # en el PATH: verificado empíricamente, `pnpm exec ...` a secas falla con
+    # "executable file not found in $PATH". `corepack pnpm` sí funciona y respeta la
+    # versión fijada en el `packageManager` del repo.
+    command: corepack pnpm exec playwright test
 
 volumes:
   pgdata:

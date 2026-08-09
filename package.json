@@ -7,9 +7,15 @@
   "scripts": {
     "dev": "pnpm -r --parallel dev",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck && pnpm typecheck:e2e",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },
   "devDependencies": {
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "@canvas/canvas-core": "workspace:*",
+    "@hocuspocus/provider": "4.4.0",
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.13.3",
+    "yjs": "13.6.31"
   }
 }

@@ -180,13 +180,20 @@ packages:
   "scripts": {
     "dev": "pnpm -r --parallel dev",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck && pnpm typecheck:e2e",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },
   "devDependencies": {
     "typescript": "7.0.2"
   }
 }
 ```
+
+`typecheck:e2e` existe porque `e2e/` y `playwright.config.ts` **no son miembros del
+workspace**, así que `pnpm -r typecheck` no los alcanza y quedarían sin comprobar pese a
+que el proyecto exige TypeScript estricto. El fichero `tsconfig.e2e.json` que los cubre se
+crea en la Task 9, cuando aparecen esos ficheros; hasta entonces este script no tiene nada
+que comprobar.
 
 - [ ] **Step 5: Crear `tsconfig.base.json`**
 
@@ -1290,6 +1297,22 @@ export default defineConfig({
     // El bind mount desde macOS no propaga eventos inotify de forma fiable;
     // sin polling el HMR se pierde cambios.
     watch: { usePolling: true },
+    // El contenedor de tests E2E llega como `http://web:5173` (nombre del servicio en la
+    // red de Docker) y Vite 8 rechaza por defecto cualquier Host que no reconozca.
+    allowedHosts: ['web'],
+    // El WebSocket del servidor de sincronización se sirve por proxy en vez de dar al
+    // cliente una url absoluta. El motivo es que el bundle corre en el navegador, y no
+    // existe una url que valga a la vez para los dos navegadores que abren esta app:
+    // desde el host `sync` está en `localhost:1234`, pero desde el navegador de Playwright
+    // —que vive dentro de un contenedor— `localhost` es su propio contenedor. Con proxy,
+    // el cliente pide siempre al mismo origen que le sirvió la página y funciona en ambos.
+    proxy: {
+      '/sync': {
+        target: 'ws://sync:1234',
+        ws: true,
+        rewrite: (path) => path.replace(/^\/sync/, ''),
+      },
+    },
   },
 })
 ```
@@ -1349,7 +1372,9 @@ porque las resuelve el navegador, no el contenedor.
       DATABASE_URL: postgres://canvas:canvas@postgres:5432/canvas
       REDIS_URL: redis://redis:6379
       VITE_API_URL: http://localhost:3001
-      VITE_SYNC_URL: ws://localhost:1234
+      # No hay VITE_SYNC_URL: el cliente llega al servidor de sincronización por el proxy
+      # de Vite (`/sync`), porque una url absoluta no puede valer a la vez para el
+      # navegador del host y para el de Playwright dentro de un contenedor.
 ```
 
 - [ ] **Step 8: Verificar los cinco servicios juntos**
@@ -1759,7 +1784,10 @@ Expected: FAIL, no resuelve `../src/operations.js`.
 - [ ] **Step 3: Escribir `packages/canvas-core/src/doc.ts`**
 
 ```typescript
-import * as Y from 'yjs'
+// `import type`: en este fichero `Y` solo aparece en posición de tipo. Es la misma
+// convención que sigue selectors.ts; operations.ts sí necesita el import de valor porque
+// construye `new Y.Map()` y `new Y.Text()`.
+import type * as Y from 'yjs'
 
 export const SHAPES_KEY = 'shapes'
 
@@ -2149,6 +2177,25 @@ export default defineConfig({
 })
 ```
 
+- [ ] **Step 3b: Crear `tsconfig.e2e.json` en la raíz**
+
+`e2e/` y `playwright.config.ts` no son miembros del workspace, así que `pnpm -r typecheck`
+no los alcanza: sin este fichero quedarían **fuera de todo typecheck** pese al requisito de
+TypeScript estricto, y Playwright los transpila sin comprobar tipos. Incluye
+`apps/web/src/global.d.ts` para que la declaración del puente de test sea visible.
+
+```json
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["es2023", "dom"],
+    "types": ["node"]
+  },
+  "include": ["e2e", "playwright.config.ts", "apps/web/src/global.d.ts"]
+}
+```
+
 - [ ] **Step 4: Crear `e2e/helpers.ts`**
 
 ```typescript
@@ -2271,8 +2318,13 @@ export function useCanvasDoc(boardId: string): CanvasDoc {
   const [status, setStatus] = useState<ConnectionStatus>('connecting')
 
   useEffect(() => {
+    // Url relativa al origen que sirvió la página, no absoluta: Vite proxea `/sync` hacia
+    // el servidor de sincronización (ver `vite.config.ts`). Así funciona igual desde el
+    // navegador del host que desde el de Playwright dentro de un contenedor, donde
+    // `localhost` sería el propio contenedor y no alcanzaría a `sync`.
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const next = new HocuspocusProvider({
-      url: import.meta.env.VITE_SYNC_URL ?? 'ws://localhost:1234',
+      url: `${wsProtocol}//${location.host}/sync`,
       name: boardId,
       document: doc,
       onStatus: ({ status: s }) => {
@@ -2288,8 +2340,9 @@ export function useCanvasDoc(boardId: string): CanvasDoc {
     onUpdate()
 
     // Puente de solo lectura para los E2E: afirmar sobre el estado del documento es
-    // determinista, mientras que afirmar sobre píxeles del canvas no lo es. Vive aquí
-    // porque este hook es el dueño del Y.Doc. Solo en dev.
+    // determinista, mientras que afirmar sobre píxeles del canvas no lo es. Solo en dev.
+    // El puente lo componen varios dueños (aquí `readShapes`, en CanvasStage `layerNames`),
+    // así que se mezcla en vez de reemplazar.
     if (import.meta.env.DEV) {
       window.__canvasDoc = doc
       window.__canvas = { ...window.__canvas, readShapes: () => readShapes(doc) }
@@ -2298,10 +2351,16 @@ export function useCanvasDoc(boardId: string): CanvasDoc {
     return () => {
       doc.off('update', onUpdate)
       next.destroy()
+      // Destruir también el documento: sin esto, cambiar de board deja el Y.Doc anterior
+      // huérfano con sus observers vivos.
+      doc.destroy()
       setProvider(null)
       if (import.meta.env.DEV) {
         delete window.__canvasDoc
-        delete window.__canvas
+        // Solo la clave propia. Borrar `window.__canvas` entero se llevaría por delante
+        // `layerNames`, que publica CanvasStage en un efecto que no vuelve a ejecutarse
+        // si únicamente cambia el board.
+        delete window.__canvas?.readShapes
       }
     }
   }, [boardId, doc])
@@ -2457,14 +2516,23 @@ import type * as Y from 'yjs'
 
 declare global {
   interface Window {
+    /**
+     * Puente de test, solo en dev. Cada clave la publica un dueño distinto y en un momento
+     * distinto (`readShapes` desde useCanvasDoc, `layerNames` desde CanvasStage), así que
+     * todas son opcionales: quien las consuma debe esperar a que existan.
+     */
     __canvas?: {
-      readShapes: () => Shape[]
-      layerNames: () => string[]
+      readShapes?: () => Shape[]
+      layerNames?: () => string[]
     }
     __canvasDoc?: Y.Doc
   }
 }
 ```
+
+**Este fichero es la única declaración del puente.** `e2e/helpers.ts` **no** debe declarar
+su propia versión de `Window`: dos declaraciones que divergen es justo lo que dejó
+`layerNames` sin tipar y sin que nadie lo detectara.
 
 - [ ] **Step 12: Ejecutar el test y verlo pasar**
 
@@ -3384,7 +3452,7 @@ Run: `docker compose run --rm api pnpm -r test`
 Expected: PASS. `@canvas/canvas-core` 19 tests, `@canvas/schema` 3, `api` 3, `sync` 3.
 Run: `docker compose run --rm e2e pnpm exec playwright test`
 Expected: PASS, 12 tests E2E.
-Run: `docker compose run --rm api pnpm -r typecheck`
+Run: `docker compose run --rm api pnpm typecheck`
 Expected: sin errores.
 
 - [ ] **Step 6: Escribir `docs/arquitectura/flujo-de-sincronizacion.md`**
@@ -3457,7 +3525,7 @@ Ejecuta esto y **lee la salida** antes de declarar nada terminado:
 - [ ] `docker compose up -d && docker compose ps` → cinco servicios, `postgres`/`redis`/`api` healthy
 - [ ] `docker compose run --rm api pnpm -r test` → 28 tests unitarios y de integración
 - [ ] `docker compose run --rm e2e pnpm exec playwright test` → 12 tests E2E
-- [ ] `docker compose run --rm api pnpm -r typecheck` → sin errores
+- [ ] `docker compose run --rm api pnpm typecheck` → sin errores
 - [ ] `docker compose run --rm api sh -c "grep -rn 'react\|konva' packages/canvas-core/src || echo LIMPIO"` → `LIMPIO`
 - [ ] Abrir dos navegadores en `localhost:5173/?board=demo`, crear formas en uno y verlas en el otro con los cursores moviéndose
 
