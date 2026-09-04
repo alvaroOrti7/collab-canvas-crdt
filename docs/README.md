@@ -13,8 +13,6 @@ sistema.
 
 ## Documentación viva
 
-Todavía vacía. Se irá poblando durante la implementación:
-
-- `arquitectura/` — por qué el sistema es como es: capas, flujos, ADR
+- [Flujo de sincronización](arquitectura/flujo-de-sincronizacion.md) — cómo viaja un cambio del navegador al resto de la sala, por qué el arrastre no pasa por el documento y cómo se ordena el pintado.
 - `referencia/` — qué existe y qué garantiza: esquema de datos, endpoints, variables de entorno
 - [Guía: entorno de desarrollo](guias/entorno-de-desarrollo.md) — arrancar los cinco servicios, trabajar dentro del devcontainer y comandos habituales.

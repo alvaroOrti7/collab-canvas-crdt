@@ -5,14 +5,5 @@ function boardIdFromUrl(): string {
 }
 
 export function App() {
-  const boardId = boardIdFromUrl()
-
-  return (
-    <>
-      <header style={{ height: 48, display: 'flex', alignItems: 'center', padding: '0 12px' }}>
-        <strong>Lienzo colaborativo</strong>
-      </header>
-      <CanvasStage boardId={boardId} />
-    </>
-  )
+  return <CanvasStage boardId={boardIdFromUrl()} />
 }

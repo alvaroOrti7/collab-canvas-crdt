@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import * as Y from 'yjs'
 import { HocuspocusProvider } from '@hocuspocus/provider'
-import { readShapes, type Shape } from '@canvas/canvas-core'
+import { readShapes, type Presence, type Shape } from '@canvas/canvas-core'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 
@@ -45,7 +45,15 @@ export function useCanvasDoc(boardId: string): CanvasDoc {
     // porque este hook es el dueño del Y.Doc. Solo en dev.
     if (import.meta.env.DEV) {
       window.__canvasDoc = doc
-      window.__canvas = { ...window.__canvas, readShapes: () => readShapes(doc) }
+      window.__canvas = {
+        ...window.__canvas,
+        readShapes: () => readShapes(doc),
+        // El commit final (`onDragEnd`) siempre lee del nodo Konva fresco, así que nunca
+        // distingue un `onDragMove` roto: para verificar de verdad la conversión
+        // centro→esquina de la elipse hay que poder mirar lo que se publicó en awareness
+        // a mitad del gesto, no solo el resultado final.
+        localDragging: () => (next.awareness?.getLocalState() as Presence | undefined)?.dragging ?? null,
+      }
     }
 
     return () => {
@@ -57,10 +65,11 @@ export function useCanvasDoc(boardId: string): CanvasDoc {
       setProvider(null)
       if (import.meta.env.DEV) {
         delete window.__canvasDoc
-        // Solo la clave propia. Borrar `window.__canvas` entero se llevaría por delante
+        // Solo las claves propias. Borrar `window.__canvas` entero se llevaría por delante
         // `layerNames`, que publica CanvasStage en un efecto que no vuelve a ejecutarse
         // si únicamente cambia el board.
         delete window.__canvas?.readShapes
+        delete window.__canvas?.localDragging
       }
     }
   }, [boardId, doc])

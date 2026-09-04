@@ -33,7 +33,20 @@ function highestZIndex(doc: Y.Doc): string | null {
   return highest
 }
 
-export function addShape(doc: Y.Doc, shape: NewShape, id: ShapeId = crypto.randomUUID()): ShapeId {
+/**
+ * `crypto.randomUUID()` NO sirve aquí: solo existe en contextos seguros (HTTPS o
+ * localhost), así que es `undefined` en un despliegue por HTTP plano sobre cualquier otro
+ * host — y también en el navegador de los tests E2E, que carga desde http://web:5173.
+ * Verificado ahí: `isSecureContext` es false y `crypto.randomUUID` no está, pero
+ * `crypto.getRandomValues` sí. 16 bytes en hexadecimal dan la misma entropía que un UUIDv4.
+ */
+function randomShapeId(): ShapeId {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+export function addShape(doc: Y.Doc, shape: NewShape, id: ShapeId = randomShapeId()): ShapeId {
   const zIndex = keyAfter(highestZIndex(doc))
 
   doc.transact(() => {
