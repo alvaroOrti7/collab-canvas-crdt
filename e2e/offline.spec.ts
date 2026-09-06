@@ -17,6 +17,11 @@ test('las ediciones hechas sin red se sincronizan al reconectar', async ({ brows
   await waitForShapeCount(a, 2)
 
   // B no debe verla mientras A está aislado.
+  // Espera deliberada antes de afirmar el negativo: sin ella, si `setOffline` no tuviera
+  // efecto, el update de A llegaría a B en pocos milisegundos y esta aserción pasaría o
+  // fallaría según el planificador. Es la única línea que distingue "el aislamiento
+  // funciona" de "todo iba conectado".
+  await b.waitForTimeout(1_000)
   expect(await shapesIn(b)).toHaveLength(1)
 
   await a.context().setOffline(false)

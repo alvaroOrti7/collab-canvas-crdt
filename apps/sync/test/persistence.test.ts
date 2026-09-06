@@ -19,7 +19,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db.execute(sql`DELETE FROM boards WHERE id = ${BOARD}`)
-  await pool.end()
+  // Si beforeAll falló, `pool` es undefined y el TypeError taparía el error real —que es
+  // justo el de conexión a la base de datos que interesa leer.
+  if (pool) await pool.end()
 })
 
 /** Espera activa determinista: reintenta hasta que la condición se cumple o expira. */
@@ -110,7 +112,12 @@ test('el snapshot queda escrito en board_docs', async () => {
 
   const rows = await db.execute(sql`SELECT ydoc FROM board_docs WHERE board_id = ${SNAPSHOT_BOARD}`)
   expect(rows.rows).toHaveLength(1)
-  expect((rows.rows[0]!.ydoc as Buffer).byteLength).toBeGreaterThan(0)
+  // `byteLength > 0` pasaría persistiendo un documento vacío: encodeStateAsUpdate de un
+  // Y.Doc recién creado ya son 2 bytes. Lo que hay que comprobar es que el snapshot
+  // contiene la forma.
+  const restored = new Y.Doc()
+  Y.applyUpdate(restored, new Uint8Array(rows.rows[0]!.ydoc as Buffer))
+  expect(restored.getMap('shapes').get('s1')).toBe('rectangulo')
 
   await db.execute(sql`DELETE FROM boards WHERE id = ${SNAPSHOT_BOARD}`)
 })
@@ -133,4 +140,15 @@ test('un snapshot ilegible lanza en lugar de servir un documento vacío', async 
   ).rejects.toThrow(/ilegible/)
 
   await db.execute(sql`DELETE FROM boards WHERE id = ${CORRUPT}`)
+})
+
+test('un board que no existe en boards se rechaza en vez de fallar al guardar', async () => {
+  const persistence = createPersistence(db)
+
+  // Sin fila en `boards`, guardar violaría la FK y Hocuspocus dejaría el documento en
+  // memoria para siempre. Es preferible rechazar la carga: el fallo se ve de inmediato en
+  // vez de manifestarse como pérdida de datos en el siguiente reinicio.
+  await expect(
+    persistence.configuration.fetch({ documentName: 'board-que-no-existe' } as never),
+  ).rejects.toThrow(/no existe/)
 })

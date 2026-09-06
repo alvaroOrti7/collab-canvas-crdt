@@ -1,7 +1,7 @@
 import { Database } from '@hocuspocus/extension-database'
 import { eq, sql } from 'drizzle-orm'
 import * as Y from 'yjs'
-import { boardDocs, type Db } from '@canvas/schema'
+import { boardDocs, boards, type Db } from '@canvas/schema'
 
 /**
  * Un snapshot ilegible no puede devolverse como si no existiera: Hocuspocus trataría el
@@ -20,8 +20,21 @@ function assertLoadable(documentName: string, bytes: Uint8Array): Uint8Array {
 
 export function createPersistence(db: Db): Database {
   return new Database({
-    // null significa "board sin snapshot todavía", que sí es un documento nuevo legítimo.
+    // Tres respuestas distintas, y la diferencia importa:
+    //   - el board no existe en `boards`      -> lanza: la conexión se rechaza
+    //   - existe pero no tiene snapshot        -> null: documento nuevo legítimo
+    //   - existe y tiene snapshot ilegible     -> lanza (assertLoadable)
+    // Sin la primera, `store` violaría la FK en cada intento, Hocuspocus dejaría el
+    // documento en memoria indefinidamente y nada se persistiría jamás.
     fetch: async ({ documentName }) => {
+      const board = await db
+        .select({ id: boards.id })
+        .from(boards)
+        .where(eq(boards.id, documentName))
+        .limit(1)
+
+      if (!board[0]) throw new Error(`el board "${documentName}" no existe`)
+
       const rows = await db
         .select({ ydoc: boardDocs.ydoc })
         .from(boardDocs)

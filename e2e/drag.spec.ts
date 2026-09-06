@@ -72,6 +72,10 @@ test('el gesto genera una sola escritura en el documento, no una por frame', asy
   // Con el gesto espaciado en ~7 ventanas de throttle, ese diseño roto produciría ~7
   // updates y caería contra este umbral. El commit único al soltar sigue dando 1.
   expect(updates).toBeLessThanOrEqual(3)
+  // Y la cota inferior, que no es redundante: un arrastre completamente roto produce CERO
+  // updates y pasaría solo con el `<=`. Ocurrió de verdad —este fue el único test de
+  // drag.spec.ts que siguió verde mientras los otros cuatro caían.
+  expect(updates).toBeGreaterThanOrEqual(1)
 })
 
 test('arrastrar una elipse la deja en su esquina esperada, no desplazada media caja', async ({ page }) => {
@@ -128,4 +132,50 @@ test('mientras arrastra una elipse, awareness publica la esquina en curso, no el
   expect(published).toBeDefined()
   expect(Math.round(published!.x)).toBe(Math.round(shape!.x + dx))
   expect(Math.round(published!.y)).toBe(Math.round(shape!.y + dy))
+})
+
+test('el otro cliente ve la forma moverse mientras se arrastra, no solo al soltar', async ({ browser }) => {
+  const board = boardUrl(`e2e-livedrag-${Date.now()}`)
+  const a = await browser.newPage()
+  const b = await browser.newPage()
+  await a.goto(board)
+  await b.goto(board)
+
+  await a.getByTestId('tool-rect').click()
+  await waitForShapeCount(b, 1)
+
+  const [before] = await shapesIn(a)
+  const startX = before!.x + before!.w / 2
+  const startY = before!.y + before!.h / 2 + 48
+
+  await a.mouse.move(startX, startY)
+  await a.mouse.down()
+  await a.mouse.move(startX + 200, startY)
+  await a.waitForTimeout(60)
+
+  // Con el botón AÚN pulsado: B debe estar viendo ya la posición provisional. Sin consumidor
+  // del carril de awareness, aquí no habría nada y el test se cae por timeout.
+  await b.waitForFunction(
+    (id) => {
+      const d = window.__canvas?.remoteDragging?.()
+      return d != null && d[id] != null
+    },
+    before!.id,
+    { timeout: 5_000 },
+  )
+
+  // Y ahora lo que de verdad importa: que la forma esté PINTADA en esa posición. Leer
+  // `remoteDragging()` solo probaría que el dato llegó al puente — `CanvasStage` lo publica
+  // directamente desde el hook, sin pasar por `ShapeNode`, así que un fallo de pintado no se
+  // notaría. La posición del nodo de Konva es lo único que no se puede fingir.
+  const painted = await b.evaluate((id) => window.__canvas!.shapePosition!(id), before!.id)
+  expect(painted).not.toBeNull()
+  expect(painted!.x).toBeGreaterThan(before!.x + 150)
+
+  // Y el documento del receptor todavía NO se ha movido: es posición provisional, no commit.
+  expect((await shapesIn(b))[0]!.x).toBe(before!.x)
+
+  await a.mouse.up()
+  await a.close()
+  await b.close()
 })

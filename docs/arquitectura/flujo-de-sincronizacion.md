@@ -30,6 +30,30 @@ No hay lista de orden compartida: cada forma tiene un `zIndex` de índice fracci
 comparador desempata por `id`. Dos clientes que insertan en el mismo hueco pueden generar
 la misma clave, y sin el desempate ordenarían distinto sobre un estado convergente.
 
+## Las tres capas, y por qué la de interacción está vacía
+
+El Stage monta `layer-static`, `layer-interaction` y `layer-overlay`, en ese orden. Konva
+repinta una capa entera cuando cambia cualquiera de sus nodos, así que la idea era llevar la
+forma arrastrada a `layer-interaction` durante el gesto: con 300 formas en el board, dejarla
+en `layer-static` significa repintar las 300 en cada frame.
+
+**No se ha hecho, y la capa está montada pero vacía.** react-konva no mueve un nodo entre
+capas: lo desmonta y monta otro. Konva pierde así el nodo que estaba arrastrando y el gesto
+muere en el primer frame. Está verificado en los dos momentos posibles de disparo —dentro de
+`onDragMove` y al entrar el puntero en la forma—, y ambos rompen los cuatro tests E2E de
+arrastre; el segundo además se realimenta, porque destruir el nodo bajo el puntero emite
+`mouseleave` y vuelve a reparentar.
+
+Hacerlo bien exige sacar el arrastre de react-konva y manejar el nodo con la API imperativa
+de Konva (`node.moveTo()`), que sí lo mueve sin destruirlo. Es un cambio de enfoque en la
+capa de interacción, no un ajuste: queda pendiente y el coste que se paga mientras tanto es
+repintar `layer-static` durante el arrastre.
+
+`layer-overlay` va con `listening={false}`. No es cosmético: se pinta encima de
+`layer-static`, así que sin eso el círculo del cursor remoto gana el hit test y **la forma
+que tapa deja de poder seleccionarse ni arrastrarse** — justo cuando dos personas trabajan
+sobre la misma figura, que es el caso de uso central.
+
 ## Cursores
 
 Awareness llega a ~25 Hz y la pantalla pinta a 60: los cursores se interpolan con lerp en

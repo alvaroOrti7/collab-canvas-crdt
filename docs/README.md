@@ -10,6 +10,7 @@ sistema.
 
 - [Diseño: Lienzo colaborativo en tiempo real con CRDT](superpowers/specs/2026-07-30-lienzo-colaborativo-crdt-design.md) — spec aprobado del proyecto: stack verificado, arquitectura de cinco servicios, modelo de datos Yjs y fases de entrega.
 - [Plan: fases 0 y 1 — andamio y MVP](superpowers/plans/2026-07-30-fases-0-1-andamio-y-mvp.md) — 13 tareas con TDD paso a paso, desde el devcontainer hasta el lienzo colaborativo con cursores y test de partición de red.
+- [Plan: correcciones tras la revisión final](superpowers/plans/2026-09-05-correcciones-revision-final.md) — 5 tareas para dejar la rama fusionable: la persistencia rota, el arrastre en vivo que nadie veía, los cursores que no interpolaban y los tests que no discriminaban.
 
 ## Documentación viva
 

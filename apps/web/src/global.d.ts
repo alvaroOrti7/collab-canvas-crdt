@@ -15,6 +15,11 @@ declare global {
       /** Estado local de awareness (`dragging`) mientras un gesto de arrastre está en curso. */
       localDragging?: () => Presence['dragging']
       remoteCursorCount?: () => number
+      remoteDragging?: () => Record<string, { x: number; y: number }>
+      /** Posición real del nodo de Konva, para poder afirmar sobre lo pintado y no sobre el dato. */
+      shapePosition?: (id: string) => { x: number; y: number } | null
+      /** Posición pintada (post-interpolación) del primer cursor remoto, no el dato bruto de awareness. */
+      remoteCursorPosition?: () => { x: number; y: number } | null
     }
     __canvasDoc?: Y.Doc
     __updateCount?: number

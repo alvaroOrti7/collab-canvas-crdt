@@ -32,7 +32,7 @@ export function CanvasStage({ boardId }: CanvasStageProps) {
   const [selected, setSelected] = useState<ShapeId | null>(null)
   const stageRef = useRef<Konva.Stage>(null)
   const drag = useDragCommit(doc, provider)
-  const cursors = useRemotePresence(provider)
+  const { cursors, dragging } = useRemotePresence(provider)
   const lastCursor = useRef(0)
 
   // Se conserva de la Task 9: el test de las tres capas depende de este puente.
@@ -51,6 +51,23 @@ export function CanvasStage({ boardId }: CanvasStageProps) {
     window.__canvas = { ...window.__canvas!, remoteCursorCount: () => cursors.length }
   }, [cursors.length])
 
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    window.__canvas = { ...window.__canvas!, remoteDragging: () => dragging }
+  }, [dragging])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    window.__canvas = {
+      ...window.__canvas!,
+      // `ShapeNode` asigna `id: shape.id` al nodo, así que se puede localizar por selector.
+      shapePosition: (id: string) => {
+        const node = stageRef.current?.findOne(`#${id}`)
+        return node ? { x: node.x(), y: node.y() } : null
+      },
+    }
+  }, [])
+
   // Publica identidad una sola vez al conectar: el otro cliente necesita nombre y color
   // para pintar el cursor la primera vez que aparece.
   useEffect(() => {
@@ -61,6 +78,12 @@ export function CanvasStage({ boardId }: CanvasStageProps) {
       CURSOR_PALETTE[provider.awareness.clientID % CURSOR_PALETTE.length],
     )
   }, [provider])
+
+  // Si otro cliente borra la forma seleccionada, `selected` apuntaría a un id inexistente y
+  // el botón de borrar seguiría habilitado sin hacer nada.
+  useEffect(() => {
+    if (selected && !shapes.some((shape) => shape.id === selected)) setSelected(null)
+  }, [shapes, selected])
 
   const handleMouseMove = useCallback(
     (e: KonvaEventObject<MouseEvent>) => {
@@ -90,6 +113,7 @@ export function CanvasStage({ boardId }: CanvasStageProps) {
     setSelected(null)
   }, [doc, selected])
 
+
   return (
     <>
       <header style={{ height: HEADER_HEIGHT, display: 'flex', alignItems: 'center', gap: 16, padding: '0 12px' }}>
@@ -112,13 +136,27 @@ export function CanvasStage({ boardId }: CanvasStageProps) {
               selected={shape.id === selected}
               onSelect={setSelected}
               draggable
+              remotePosition={dragging[shape.id]}
               onDragMove={drag.onDragMove}
               onDragEnd={drag.onDragEnd}
             />
           ))}
         </Layer>
+        {/*
+          Vacía a propósito. Llevar aquí la forma arrastrada evitaría repintar `layer-static`
+          entera durante el gesto (§5.3 del spec), pero react-konva no mueve el nodo entre
+          capas: lo destruye y monta otro, y Konva pierde el nodo que estaba arrastrando.
+          Verificado: rompe 4 tests E2E de drag, tanto disparándolo en `onDragMove` como al
+          entrar el puntero. Requiere manejar el arrastre con la API imperativa de Konva en
+          vez de con react-konva; ver docs/arquitectura/flujo-de-sincronizacion.md.
+        */}
         <Layer name="layer-interaction" />
-        <Layer name="layer-overlay">
+        {/*
+          `listening={false}` no es cosmético: esta capa se pinta ENCIMA de `layer-static`, así
+          que sin él el círculo del cursor remoto gana el hit test y la forma que tapa deja de
+          poder seleccionarse ni arrastrarse. Nada de lo que hay aquí es interactivo.
+        */}
+        <Layer name="layer-overlay" listening={false}>
           <CursorOverlay cursors={cursors} />
         </Layer>
       </Stage>

@@ -60,3 +60,34 @@ test('borrar la forma seleccionada la elimina en ambos navegadores', async ({ br
   await a.close()
   await b.close()
 })
+
+test('la selección se limpia si otro cliente borra la forma seleccionada', async ({ browser }) => {
+  const board = boardUrl(`e2e-selclear-${Date.now()}`)
+  const a = await browser.newPage()
+  const b = await browser.newPage()
+  await a.goto(board)
+  await b.goto(board)
+
+  await a.getByTestId('tool-rect').click()
+  await waitForShapeCount(b, 1)
+
+  const [shape] = await shapesIn(a)
+  await a.mouse.click(shape!.x + shape!.w / 2, shape!.y + shape!.h / 2 + 48)
+  await expect(a.getByTestId('tool-delete')).toBeEnabled()
+
+  // B borra la forma que A tiene seleccionada.
+  // `waitForShapeCount` solo garantiza que el DOCUMENTO de B tiene la forma, no que Konva la
+  // haya pintado. Sin esta espera el clic cae sobre el lienzo vacío, B no selecciona nada y
+  // el test muere a los 30 s esperando a que se habilite "Borrar".
+  await b.waitForFunction((id) => window.__canvas?.shapePosition?.(id) != null, shape!.id, {
+    timeout: 5_000,
+  })
+  await b.mouse.click(shape!.x + shape!.w / 2, shape!.y + shape!.h / 2 + 48)
+  await b.getByTestId('tool-delete').click()
+  await waitForShapeCount(a, 0)
+
+  await expect(a.getByTestId('tool-delete')).toBeDisabled()
+
+  await a.close()
+  await b.close()
+})

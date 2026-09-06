@@ -10,11 +10,45 @@ export interface RemoteCursor {
   y: number
 }
 
+export interface RemotePresence {
+  cursors: RemoteCursor[]
+  /** Posiciones provisionales de formas que otros están arrastrando ahora mismo. */
+  dragging: Record<string, { x: number; y: number }>
+}
+
 /** Cadencia de reevaluación del TTL. No hace falta más fino: el umbral es de 30 s. */
 const SWEEP_INTERVAL_MS = 5_000
 
-export function useRemotePresence(provider: HocuspocusProvider | null): RemoteCursor[] {
-  const [cursors, setCursors] = useState<RemoteCursor[]>([])
+/**
+ * Devolver el mismo objeto cuando nada cambió evita re-renderizar el árbol entero de formas
+ * en cada evento de awareness — y `setLocalState` emite uno también para el propio cliente,
+ * así que sin esto un solo usuario moviendo el ratón ya reconciliaría todo a 25 Hz.
+ */
+function samePresence(
+  prev: RemotePresence,
+  cursors: RemoteCursor[],
+  dragging: RemotePresence['dragging'],
+): boolean {
+  if (prev.cursors.length !== cursors.length) return false
+  for (let i = 0; i < cursors.length; i++) {
+    const a = prev.cursors[i]!
+    const b = cursors[i]!
+    if (a.clientId !== b.clientId || a.x !== b.x || a.y !== b.y || a.name !== b.name || a.color !== b.color) {
+      return false
+    }
+  }
+  const prevKeys = Object.keys(prev.dragging)
+  const nextKeys = Object.keys(dragging)
+  if (prevKeys.length !== nextKeys.length) return false
+  return nextKeys.every((k) => {
+    const a = prev.dragging[k]
+    const b = dragging[k]!
+    return a != null && a.x === b.x && a.y === b.y
+  })
+}
+
+export function useRemotePresence(provider: HocuspocusProvider | null): RemotePresence {
+  const [presence, setPresence] = useState<RemotePresence>({ cursors: [], dragging: {} })
   // Timestamps de recepción local, no del emisor: los relojes remotos no son fiables.
   const lastSeen = useRef(new Map<number, number>())
 
@@ -25,6 +59,7 @@ export function useRemotePresence(provider: HocuspocusProvider | null): RemoteCu
     const read = () => {
       const now = Date.now()
       const next: RemoteCursor[] = []
+      const drags: RemotePresence['dragging'] = {}
 
       for (const [clientId, raw] of awareness.getStates()) {
         if (clientId === awareness.clientID) continue
@@ -40,6 +75,7 @@ export function useRemotePresence(provider: HocuspocusProvider | null): RemoteCu
             y: state.cursor.y,
           })
         }
+        if (state?.dragging) Object.assign(drags, state.dragging)
       }
 
       // Segunda defensa del spec: descartar por antigüedad sin esperar al servidor,
@@ -47,7 +83,8 @@ export function useRemotePresence(provider: HocuspocusProvider | null): RemoteCu
       const stale = new Set(staleClientIds(lastSeen.current, now, CURSOR_TTL_MS))
       for (const clientId of stale) lastSeen.current.delete(clientId)
 
-      setCursors(next.filter((c) => !stale.has(c.clientId)))
+      const visible = next.filter((c) => !stale.has(c.clientId))
+      setPresence((prev) => (samePresence(prev, visible, drags) ? prev : { cursors: visible, dragging: drags }))
     }
 
     awareness.on('change', read)
@@ -60,5 +97,5 @@ export function useRemotePresence(provider: HocuspocusProvider | null): RemoteCu
     }
   }, [provider])
 
-  return cursors
+  return presence
 }

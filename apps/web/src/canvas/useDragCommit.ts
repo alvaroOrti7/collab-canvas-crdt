@@ -41,8 +41,11 @@ export function useDragCommit(doc: Y.Doc, provider: HocuspocusProvider | null): 
   const onDragEnd = useCallback(
     (id: ShapeId, x: number, y: number) => {
       updateShape(doc, id, { x, y })
-      // Limpiar el carril efímero: si se queda, los demás verían la forma en dos sitios.
-      provider?.awareness?.setLocalStateField('dragging', null)
+      // Se borra solo la clave de esta forma, no el objeto entero: limpiar todo perdería el
+      // estado de cualquier otro arrastre en curso del mismo cliente.
+      const current = (provider?.awareness?.getLocalState() as Presence | null)?.dragging ?? {}
+      const { [id]: _removed, ...rest } = current
+      provider?.awareness?.setLocalStateField('dragging', Object.keys(rest).length ? rest : null)
       lastPublished.current = 0
     },
     [doc, provider],

@@ -9,6 +9,14 @@ const BOARD = 'e2e-render'
 test('una forma sembrada desde otro cliente aparece en el navegador', async ({ page }) => {
   const doc = new Y.Doc()
 
+  // El servidor de sincronización rechaza un board sin fila en `boards`, así que este
+  // cliente sembrador tiene que asegurarlo igual que hace la aplicación. Antes no hacía
+  // falta porque `sync` aceptaba cualquier nombre de documento: justamente el agujero que
+  // esta tarea cierra.
+  const apiUrl = process.env.API_URL ?? 'http://localhost:3001'
+  const ensured = await fetch(`${apiUrl}/boards/${encodeURIComponent(BOARD)}`, { method: 'PUT' })
+  expect(ensured.ok).toBe(true)
+
   // Sin `WebSocketPolyfill` ni dependencia `ws`: Node 24 trae un WebSocket global
   // compatible, verificado empíricamente. Y se espera con el callback `onSynced` de la
   // configuración, no con `provider.on('synced', ...)`, que no está en los tipos públicos.

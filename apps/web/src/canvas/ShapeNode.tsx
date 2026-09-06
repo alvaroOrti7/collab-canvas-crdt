@@ -9,9 +9,24 @@ export interface ShapeNodeProps {
   draggable: boolean
   onDragMove: (id: string, x: number, y: number) => void
   onDragEnd: (id: string, x: number, y: number) => void
+  /** Posición provisional publicada por otro cliente que está arrastrando esta forma. */
+  remotePosition?: { x: number; y: number }
 }
 
-export function ShapeNode({ shape, selected, onSelect, draggable, onDragMove, onDragEnd }: ShapeNodeProps) {
+export function ShapeNode({
+  shape,
+  selected,
+  onSelect,
+  draggable,
+  onDragMove,
+  onDragEnd,
+  remotePosition,
+}: ShapeNodeProps) {
+  // Mientras otro arrastra, se pinta su posición provisional; el documento todavía no la
+  // tiene, porque el commit ocurre al soltar.
+  const x = remotePosition?.x ?? shape.x
+  const y = remotePosition?.y ?? shape.y
+
   const common = {
     id: shape.id,
     rotation: shape.rotation,
@@ -25,7 +40,7 @@ export function ShapeNode({ shape, selected, onSelect, draggable, onDragMove, on
 
   switch (shape.type) {
     case 'rect':
-      return <Rect {...common} x={shape.x} y={shape.y} width={shape.w} height={shape.h} fill={shape.fill} />
+      return <Rect {...common} x={x} y={y} width={shape.w} height={shape.h} fill={shape.fill} />
 
     case 'ellipse':
       // Konva centra la elipse en (x,y); el modelo guarda la esquina de la caja, así que hay
@@ -36,8 +51,8 @@ export function ShapeNode({ shape, selected, onSelect, draggable, onDragMove, on
       return (
         <Ellipse
           {...common}
-          x={shape.x + shape.w / 2}
-          y={shape.y + shape.h / 2}
+          x={x + shape.w / 2}
+          y={y + shape.h / 2}
           radiusX={shape.w / 2}
           radiusY={shape.h / 2}
           fill={shape.fill}
@@ -51,9 +66,9 @@ export function ShapeNode({ shape, selected, onSelect, draggable, onDragMove, on
       )
 
     case 'text':
-      return <Text {...common} x={shape.x} y={shape.y} width={shape.w} text={shape.text} fontSize={18} fill={shape.stroke} />
+      return <Text {...common} x={x} y={y} width={shape.w} text={shape.text} fontSize={18} fill={shape.stroke} />
 
     case 'arrow':
-      return <Line {...common} x={shape.x} y={shape.y} points={[0, 0, shape.w, shape.h]} strokeWidth={selected ? 4 : 2} />
+      return <Line {...common} x={x} y={y} points={[0, 0, shape.w, shape.h]} strokeWidth={selected ? 4 : 2} />
   }
 }
